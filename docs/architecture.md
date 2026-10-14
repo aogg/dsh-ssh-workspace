@@ -225,15 +225,17 @@ receiver 原样转发。
   `priority: -100` 遮蔽原生 `directoryFlow` 双入口）与远端目录对话框；
 - 工作区标记是 **DOM 装饰**：不删改 React 节点，隐藏原生文件夹图标、
   插入自有 `svg[data-sshwsp-mark]`，MutationObserver 自愈重扫；
-- 与宿主通信走 9 条路由（前缀 `/api/dsh-ssh-workspace/`）：
-  `hosts`、`hosts/save`、`hosts/delete`、`hosts/forget-key`、`test`、`ls`、
-  `status`、`mount`、`unmount`。路由只服务**回环请求**：除 `remoteAddress`
+- 与宿主通信走 10 条路由（前缀 `/api/dsh-ssh-workspace/`）：
+  `hosts`、`hosts/save`、`hosts/delete`、`hosts/forget-key`、
+  `hosts/disconnect`、`test`、`ls`、`status`、`mount`、`unmount`。
+  路由只服务**回环请求**：除 `remoteAddress`
   回环外，还要求 `Host` 头精确为本机监听端口的 `localhost` / `127.0.0.1` /
   `[::1]` 三种拼写之一，否则 403——仅凭回环地址挡不住 DNS rebinding（页面
   可把自己的域名解析到 127.0.0.1 从而同源访问），Host 校验把这条路堵死；
   反向代理 / 自定义域名访问会被一并拒绝（预期行为）。
-- POST 路由（`hosts/save`、`hosts/delete`、`hosts/forget-key`、`test`、
-  `mount`、`unmount`）额外要求 `content-type: application/json`，否则 415：
+- POST 路由（`hosts/save`、`hosts/delete`、`hosts/forget-key`、
+  `hosts/disconnect`、`test`、`mount`、`unmount`）额外要求
+  `content-type: application/json`，否则 415：
   跨站 HTML 表单只能发 `text/plain` / `urlencoded` / `multipart`，且
   `text/plain` 可伪造出合法 JSON 体，靠内容类型就能把整类跨站写请求挡在
   门外（浏览器半边始终携带该头，不受影响）。

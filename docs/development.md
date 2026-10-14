@@ -18,7 +18,7 @@
 | `lib/fs-shim.js` | 内建桥接：`node:fs/promises` 的 `mkdir`/`stat`/`lstat`/`realpath`/`readdir`/`copyFile`/`open`/`rm` 与 `node:path` 的 `isAbsolute`/`resolve`/`join`/`relative` 对 `ssh://` 拼写单独处理（含 `syncBuiltinESMExports`）；变更追踪的 SFTP 读句柄与 scratch 镜像落盘/联动，`readdir` 服务 `@` 补全 |
 | `lib/hosts.js` | 主机解析：存储优先、`~/.ssh/config` 回退、行渲染 |
 | `lib/store.js` | `$DSH_HOME/dsh-ssh.json` 存储：校验、合并（保留未知字段）、原子写 |
-| `lib/routes.js` | 浏览器半边的 8 条 HTTP 路由（hosts / save / delete / test / ls / status / mount / unmount） |
+| `lib/routes.js` | 浏览器半边的 10 条 HTTP 路由（hosts / save / delete / forget-key / disconnect / test / ls / status / mount / unmount） |
 | `lib/tools.js` | 5 个 `ssh_workspace_*` Agent 工具（schema / 渲染 / 执行） |
 | `lib/peers.js` | 宿主依赖（`@deepseek-ai/*`、`ssh2`）的定位与加载 |
 | `lib/client.js` | 浏览器半边：面板、添加工作区流程、标记装饰、全部样式与中英文案 |

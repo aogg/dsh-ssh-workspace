@@ -39,7 +39,11 @@ const EXPECTED_TOOLS = [
   'ssh_workspace_status',
   'ssh_workspace_exec',
 ]
-const EXPECTED_ROUTES = 8
+// Route paths the browser half must expose. Kept in step with ROUTES in
+// lib/routes.js: hosts, host save/delete/forget-key/disconnect, test, ls,
+// status, mount, unmount. The two port-forward routes stay commented out
+// there, so they are intentionally absent here too.
+const EXPECTED_ROUTES = 10
 
 let failures = 0
 function check (label, ok, detail) {
