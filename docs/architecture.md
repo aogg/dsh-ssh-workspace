@@ -78,6 +78,11 @@ Cordis 拒绝在同一作用域第二次 `provide('fs')`（实现按服务的隔
   插件自身的写 / 删 / `mkdir`、watch 检测到变更、mount / unmount 都会主动
   失效对应条目。写前的版本校验、围栏裁决与 watch 轮询直读服务器，永不吃
   缓存——缓存只用来省掉「文件树展开、预览、`@` 索引」的重复 SFTP roundtrip。
+- **`listDir` 直接消费 readdir 的条目属性**：SFTP 的 `readdir` 响应本就为每个
+  条目带回 `attrs`（ssh2 `Stats`），因此类型 / 版本 / 大小全部由它推导，不再
+  对每个子项补一次 `stat`——N 条目目录由 1 + N 次**串行**往返降为 1 次
+  readdir（加缓存未命中时的一次父目录 `stat`）。仅在服务器未返回 `attrs`
+  时才逐条回退 `#statCached`。watch 快照一直按同一方式消费 `attrs`。
 - **`streamText`（惰性分块）**：SFTP 句柄逐 256 KiB 读取，增量严格 UTF-8
   解码（跨块多字节安全），首 8 KiB 做 NUL 抽样（非文本抛 `FS_NOT_TEXT`）。
   消费方提前 `.return()`（预览切页）即关闭句柄；`inFlight` 全程钉住连接。
@@ -100,6 +105,14 @@ Cordis 拒绝在同一作用域第二次 `provide('fs')`（实现按服务的隔
 尾窗 `truncated`）。`onExpiry: 'kill'` 时执行器自 arm 截止时间；`'none'` 时
 超时归 jobs 注册表（前台调用超时后被提升为后台 job）。kill 先发通道信号并
 关闭通道，5 秒宽限后仍未 close 就丢弃整条连接，保证 handle 不会挂死。
+
+**退出状态的判定**（`patch-shell.js` 的 close 处理器）：ssh2 的通道退出码初始
+为 `undefined`，只有收到 `exit-signal` 才置 `null`，因此「传输层断开且未收到
+任何 exit-status」以 `close(undefined)` 呈现。两种拼写都表示**命令从未上报
+状态**，必须走 `fail(...)` 报连接丢失——只判 `=== null` 会把断连当成
+`status: 'completed'` 的正常完成（`lib/engine.js` 用 `typeof code !== 'number'`、
+`patch-subprocess.js` 用显式双判，语义一致）。真正的非零退出码（如 `exit 1`）
+是有效结果，仍按 completed 结算并保留 `exitCode`。
 
 命令组装为 `export <env/dshEnv>; cd '<远端路径>' && <命令>`，由远端登录 shell
 按 POSIX 语义执行——远端不是 PowerShell，公告已向模型说明。**沙箱边界**：

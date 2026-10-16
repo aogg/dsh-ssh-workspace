@@ -54,6 +54,8 @@ profile 安装（`pnpm install`）会让第 1 步命中 profile 内的解析链�
 | `protocol-smoke` | 无 | `ssh://` 语法、规范化、前缀判定、basename / dirname、`file:` URI |
 | `client-shape-smoke` | 无 | package.json 的 `dsh.client` / `exports` / `files` 与 client bundle 装载约定 |
 | `lifecycle-smoke` | `DSH_CORE_ROOT` | 真实 Cordis 下 5 种服务装配顺序的接管 / 路由 / 工具注册 |
+| `phase6-smoke` | `DSH_CORE_ROOT` | 失败与规模路径的回归：断连 close 不误判完成、rename 回退不误删目标、`listDir` 无 N+1 stat、`StreamTail` join 缓存 |
+| `store-lock-smoke` | 无 | 主机存储的跨进程写锁：互斥与降级、死锁接管、并发 `mutateHosts` 不丢条目、`save()` 的替换语义 |
 | `boot-smoke` | `DSH_CORE_ROOT`（远端段另需 `DSH_WS_TEST_ALIAS`） | 生产顺序引导、`ctx.fs` 接管与还原、工具端到端 |
 | `tool-schemas-smoke` | `DSH_CORE_ROOT` | 工具 schema 过真实 `assertSupportedJsonSchema` + render 冒烟 |
 | `live-smoke` | `DSH_WS_TEST_ALIAS`（peers 可解析） | 远端 SFTP 全量契约、写围栏、错误语义、原子写、symlink |

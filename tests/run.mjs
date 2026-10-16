@@ -30,6 +30,8 @@ const SUITES = [
   'protocol',
   'client-shape',
   'lifecycle',
+  'phase6',
+  'store-lock',
   'boot',
   'secrets',
   'tool-schemas',

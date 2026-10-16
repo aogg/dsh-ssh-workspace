@@ -3,6 +3,12 @@
 > 定位：本页是 2026-10-01 安全扫描与代码审视后的修复 / 优化实施计划——按阶段列出改动点、做法、验收与顺序，供逐项执行与勾选；完成一项把 `[ ]` 改为 `[x]`。
 >
 > 状态（2026-10-01）：Phase 1 / 2 / 3 与 4.1 已实施——只留源码改动，改动文件均已 `node --check` 语法自检，未打包（打包需另行批准）；4.2 前置机制核对完成、按建议留待单独一轮。
+>
+> 状态（2026-10-16）：新增 Phase 6——2026-10-16 全项目代码复审（39 条原始发现经逐条验证后过滤）确认 3 项高优先级问题，待实施。
+>
+> 状态（2026-10-16，实施轮）：**Phase 6 的 6.1 / 6.2 / 6.3 已实施并验证**（三处文件不重叠，同轮交付）。新增 `tests/phase6-smoke.mjs`（25 项断言，覆盖三个缺陷的失败/规模路径）并接入 `tests/run.mjs`；全套 9/9 通过。
+>
+> 状态（2026-10-16，Phase 6 收尾轮）：**6.4 / 6.5 也已实施**，Phase 6 至此全部完成（无遗留项）。6.4 采用零依赖文件锁并补充 `mutateHosts` 原子读改写，6.5 缓存 `StreamTail` 的 join；新增 `tests/store-lock-smoke.mjs`（15 项）与 phase6 套件的 6.5 断言，全套 **10/10 通过**。
 
 ## 概述
 
@@ -134,6 +140,64 @@
 
 - README / README.en.md（配置表加 `engine.*` 四行）、architecture.md（第二通道、`engine.*` 表格、POST Content-Type）、development.md（「冒烟测试与 CI」节）。
 
+## Phase 6 — 代码复审确认项（2026-10-16）
+
+> 来源：2026-10-16 全项目代码复审。三路并行审查共产出 39 条原始发现，经逐条回到源码验证后过滤：3 条高优先级属实（本节，均已实施）、2 条中 / 低优先级（6.4 / 6.5，均已实施）、其余为误报或已修复（见文末「复审排除项」）。
+
+### [x] 6.1 exec 断连误判为正常完成（高，正确性）
+
+- 位置：`lib/patch-shell.js:378-386`（close 处理器）。
+- 问题：ssh2 的 `_exit.code` 初始值为 `undefined`（`Channel.js:118`），仅在收到 `exit-signal` 时才置 `null`（`client.js:675`）。传输层断开且未收到任何 exit-status 时，close 事件以 `close(undefined)` 触发；而现判断 `code === null` 漏掉 `undefined`——断连落入 `settleWith(undefined, undefined)`，结算为 `status: 'completed', exitCode: null`。
+- 做法：改用松散相等 `code == null`（同时捕获 `null` 与 `undefined`），或显式 `code === null || code === undefined`。
+- 验收：模拟传输层断开的 exec 走 `fail(...)` 报「connection dropped」，而非以 completed 结算。
+- 实施（2026-10-16）：改用 `code == null` 并加注释说明 ssh2 的两种「无状态」拼写。同族排查：`lib/engine.js:526` 用的是 `typeof code !== 'number'`（两者都覆盖，无需改）；`lib/patch-subprocess.js:638` 已显式写 `code === null || code === undefined`（本就正确）。**`patch-shell.js` 是唯一的漏网点。**
+
+### [x] 6.2 rename 回退误删目标文件（高，数据安全）
+
+- 位置：`lib/remote-fs.js:1314-1325`（`publishRename` 无 posix-rename 扩展的回退路径）。
+- 问题：`replace=true` 且初始 rename 失败时，无论失败原因（目标已存在 / 网络抖动 / 权限拒绝）都先 `unlink(to)` 再重试。若原始失败并非「目标已存在」，目标文件被无谓删除；rename 再失败则数据双失。
+- 做法：unlink 前先 `stat(to)` 探明目标确实存在（或仅当错误语义指向「目标存在」时才走 unlink + retry）；`stat` 失败或目标不存在时直接抛出原错误。
+- 验收：rename 因非「目标已存在」原因失败时，目标文件保持原样，错误原样上抛。
+- 实施（2026-10-16）：复用既有 `statOrNull`（仅在 `FS_NOT_FOUND` 时返回 `null`，其余错误 reject）作为探针——目标不存在时直接 `throw error` 抛出**原始** rename 错误；探针本身失败时也不 unlink，异常自然上抛。`publishRename` 已加入 `remote-fs.js` 的测试导出（`sftpPublishRename`），与其余 SFTP 原语同列，便于直接驱动验证。
+
+### [x] 6.3 listDir 串行 N+1 stat（高，性能）
+
+- 位置：`lib/remote-fs.js:450-467`（`listDir`）。
+- 问题：readdir 后对每个子条目单独 `#statCached`——N 条目目录产生 1 次 readdir + N 次 stat 的串行往返；而 SFTP readdir 返回的每个 entry 已携带 `attrs`（ssh2 Stats 对象，`versionOf` / `typeOf` 可直接消费，watch 快照 `remote-fs.js:740` 已在这样用）。
+- 做法：`listDir` 直接从 `entry.attrs` 推导 `type` / `version` / `size`，不再逐条 stat；`attrs` 缺失的条目再回退 `#statCached`（防御非标准服务器）。
+- 验收：含 N 条目的远端目录列出只产生 1 次 readdir 往返（+缓存未命中时的 1 次父目录 stat）；大目录（如 node_modules）列出延迟显著下降。
+- 实施（2026-10-16）：改 `entry.attrs ?? await this.#statCached(...)`。实测 25 条目目录由 1+25 次往返降为 1 次 readdir + 1 次父目录 stat；`attrs` 缺失的服务器仍逐条回退，条目数与类型不受影响。
+
+### [x] 6.4 store 跨进程写入无互斥（低，加固）
+
+- 位置：`lib/store.js:410-428`（`#writeDocument`）。
+- 背景：单进程内 re-read + 原子 rename 已安全；两个 DSH 进程同写 `$DSH_HOME/dsh-ssh.json` 时后写者覆盖先写者。同机同用户通常只跑一个实例，风险低。
+- 做法（可选）：引入 `proper-lockfile` 之类的文件锁包裹「读-改-写」窗口；或文档注明「不支持多实例并发编辑主机配置」。
+- 验收：若实现，两个进程并发 save 不丢条目。
+- 实施（2026-10-16）：**采用零依赖方案**——`open(..., 'wx')` 建的兄弟锁文件 `dsh-ssh.json.lock`（该原语在 POSIX 与 Windows 上都是原子的），不引入 `proper-lockfile` 只为这一处加固添依赖。锁行为：等待上限 2s，超时降级为不加锁写入（写本身仍是原子 rename，即原行为）；`mtime` 超过 10s 的锁视为死进程遗留，直接接管，避免崩溃后永久卡死。**关键补充**：锁单独并不能救「读在锁外」的丢失更新——`save(entries)` 的列表来自调用方早先的 `load()`，两个进程 `save([...load(), x])` 仍然后写覆盖先写。因此新增 `mutateHosts(transform)`，把「读—改—写」整体放进同一临界区；`create` / `update` / `delete` / `rememberHostKey` / `forgetHostKey` / `encryptStoredSecrets` 全部改走它。`#withDocumentLock` 的构造器返回 `undefined` 表示「无需写入」，保证无变更时不动文件（不 bump mtime）。
+- 验收结果：6 进程 × 12 次并发 `mutateHosts`，72/72 条目全部存活（锁前该场景大量丢失）；`save()` 的替换语义保留并在测试中显式记录（同名场景确实只留一个，属调用方语义而非锁缺陷）。
+
+### [x] 6.5 StreamTail.readFrom 每次全量 concat（低，性能）
+
+- 位置：`lib/patch-subprocess.js:359-364`。
+- 背景：`readFrom` 每次 `Buffer.concat(this.chunks)` 为 O(total)；尾窗 cap 默认 2MB，tail -f 类高频消费下有累积开销但可忽略。
+- 做法（可选）：缓存 concatenated buffer，`push` 时失效重建；或维持现状。
+- 验收：若实现，高频 `readFrom` 的 CPU 占用下降。
+- 实施（2026-10-16）：新增私有 `#joined()`，缓存 `Buffer.concat(this.chunks)`；`push` 末尾置 `undefined` 失效。`readFrom` 与 `finalize` 共用该缓存（`finalize` 原先也各自 concat 一次）。输出、`lossy` 标记与 `nextOffset` 语义完全不变，`StreamTail` 已导出供测试直接驱动。
+
+### 复审排除项（2026-10-16，验证后不予实施）
+
+| 原始发现 | 结论 | 依据 |
+| --- | --- | --- |
+| lifecycle-smoke `EXPECTED_ROUTES=8` 与实际不符 | 已修复 | 现值 10，与 `lib/routes.js` 的 10 条活跃路由一致（forward/unforward 注释不计） |
+| patch-fs.js `contains` 未路由 | 无效 | `contains` 不在 PATH_METHODS，无需路由 |
+| hosts.js 存取 TOCTOU | 无效 | 单进程 Node.js + 每次写入前 re-read + 原子 rename，进程内无竞态 |
+| bridge.js 事件顺序错乱 | 无效 | 不存在该文件（审查幻觉） |
+| watchFiles 监视器泄漏 | 无效 | `startRemoteWatch` 有完整 `stop` / `closed` 清理，timer 已 `unref` |
+| patch-subprocess 二进制输出错乱 | 无效 | `StreamTail.push` 直接接受 Buffer，未做逐 chunk toString |
+| engine `acquire()` closeRecord 后竞态 | 不实施 | 并发调用最终汇聚到同一 `acquiring` promise，closeRecord 幂等，无实际危害 |
+| 元数据缓存无主动失效广播 | 不实施 | TTL 1.5s 设计内行为；本插件写入与 watch 已主动失效 |
+
 ## 实施顺序与依赖
 
 ```
@@ -141,11 +205,15 @@ Phase 1: 1.1 → 1.2 → 1.3(第一层) → 1.4 → 1.5      （1.4 依赖 1.1 �
 Phase 2: 2.1、2.2 互相独立，可并行
 Phase 3: 3.1 → 3.2                                （3.2 依赖 3.1 的失效机制）
 Phase 4: 4.1 随时；4.2 独立压轴
+Phase 6: 6.1、6.2、6.3 互相独立，可同轮；6.4 / 6.5 可选
 ```
 
-- 交付切分建议：Phase 1+2 可合并为一轮（都是小改动）；每轮完成后经用户批准再走打包流程（参考 [development.md](./development.md) 的 npm pack → file: → pnpm install → 重启）。
+- 交付切分建议：Phase 1+2 可合并为一轮（都是小改动）；Phase 6 的 6.1–6.3 可合并为一轮（三处文件不重叠）；每轮完成后经用户批准再走打包流程（参考 [development.md](./development.md) 的 npm pack → file: → pnpm install → 重启）。
 - 实施记录（2026-10-01）：Phase 1 → Phase 3 与 4.1 已同轮落地（纯源码改动，未打包，待批准后升版本打包）；文档同步已完成；4.2 见其条目的结论注记。
 - 实施记录（2026-10-01，复查补充轮）：Phase 5 全部落地（5.1 安全、5.2 测试/锁文件/CI、5.3–5.5 引擎与桥接优化），4.2 经此前核对决定仍留待单独一轮；同为纯源码改动，未打包。
+- 复审记录（2026-10-16）：三路并行审查 39 条原始发现，逐条回源码验证后确认 3 项高优先级（6.1–6.3）、2 项可选（6.4 / 6.5）、8 项排除（见 Phase 6 排除表）。
+- 实施记录（2026-10-16，Phase 6 高优先级轮）：6.1 / 6.2 / 6.3 同轮落地（`patch-shell.js`、`remote-fs.js` 各一处，文件不重叠）。三个改动均已 `node --check`；新增 `tests/phase6-smoke.mjs` 以失败/规模路径直接驱动验证（断连 close、rename 失败、25 条目目录往返计数），`tests/run.mjs` 全套 9/9 通过。
+- 实施记录（2026-10-16，Phase 6 收尾轮）：6.4 / 6.5 落地（`store.js`、`patch-subprocess.js`）。新增 `tests/store-lock-smoke.mjs`（15 项，含 6 进程并发竞争与死锁接管）并把 6.5 断言并入 phase6 套件（36 项）；全套 10/10 通过。6.4 实施中发现一个计划外的认识：**单独的文件锁救不了「读在锁外」的丢失更新**——`save(entries)` 的列表来自调用方的 `load()` 快照，必须把读改写整体放进临界区（新增 `mutateHosts`，`create` / `update` / `delete` / `rememberHostKey` / `forgetHostKey` / `encryptStoredSecrets` 全部改走它）才真正达成验收口径；`save()` 的替换语义保留并在测试中显式记录。两轮均**未打包、未升版本**，按既定口径待批准后走打包流程。
 - 文档同步：1.4 → [hosts.md](./hosts.md)（knownHosts 段）与 [troubleshooting.md](./troubleshooting.md)（指纹不匹配错误条目）；1.2 / 1.3 → [architecture.md](./architecture.md)（围栏与路由节）；2.x / 3.x → architecture.md（引擎输出、变更监视节）。
 
 ## 相关
