@@ -2,6 +2,33 @@
 
 本文件记录 dsh-ssh-workspace 的版本变更。0.1.16 之前的版本为未公开的本地迭代，未收录。
 
+## [0.2.3] - 2026-10-17
+
+### 新功能
+
+- **远端 PTY 终端（`spawnTerminal` 接管）**：新增 `lib/patch-terminal.js`，把部署的
+  `ctx.subprocess.spawnTerminal` 在 `ssh://` 工作目录上路由为 SSH PTY 通道。这补上
+  了此前唯一的能力缺口——部署自带的持久 bash/pwsh 工具在远端工作区上要么失败、
+  要么在本机对着一个只存在于远端的路径启动 shell。返回值满足
+  `dsh-terminal-bash` 所依赖的句柄契约（`output` / `write` / `resize` / `done` /
+  `inspectForeground` / `signalForeground` / `terminate`）。
+  两处刻意的取舍：`argv` 不复用（那是本机方言，远端 POSIX 主机跑不了），改为启动
+  远端自己的交互式 `sh`；`inspectForeground` 返回 `undefined` 而非猜测，从而选择
+  上层文档化的「输出静默」兜底判定，避免一个错误答案让它等满整个超时。
+- **浏览器端下载**：文件选择对话框的每个文件行新增下载按钮，经新增的
+  `GET /download` 流式路由取回字节并交给浏览器保存。该路由直接返回原始字节而
+  非 JSON（避免 base64 膨胀与体积上限），因此自行重新施加回环来源与 `Host`
+  头双重校验，并只接受 GET。
+
+### 测试
+
+- 新增 `tests/terminal-smoke.mjs`（23 项）、`tests/transport-smoke.mjs`（17 项）、
+  `tests/routes-smoke.mjs`（11 项），合计 51 项新断言。
+- `tool-schemas` 补上 `ssh_workspace_shell`，现在覆盖全部 9 个工具（141 项）。
+- `transport-smoke` 首次覆盖 `agentForward` / `compress` 的三层传递（JSON 存储 →
+  描述符 → ssh2 配置），以及后台任务的两种路径：有 `jobs` 时注册并返回 id，
+  无 `jobs` 时降级为内联执行而不是返回一个没人能读的 id。
+
 ## [0.2.2] - 2026-10-17
 
 ### 新功能

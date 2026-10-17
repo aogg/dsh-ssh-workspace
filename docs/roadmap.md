@@ -64,16 +64,15 @@ bash 一期已验证：`ctx.shell` 是官方能力 seam（基类契约 + 工具�
 
 ## 大工程
 
-- [x] **持久远端 shell**（已完成 · 2026-10-17 · 按「工具」而非「接管终端」的方式）
+- [x] **持久远端 shell**（已完成 · 2026-10-17 · 两条通路）
   - 动机：一次性 `exec` 代替不了长驻交互（长命令、REPL、sudo 提示），`cd` 与导出的变量也活不过一次调用。
-  - 实现：`lib/shell.js` 的 `ShellManager` 在同一 (主机, 会话名) 上维持一个 `client.exec('sh -l', { pty })` 通道，`ssh_workspace_shell` 工具驱动它；命令以 `printf` 标记行回传 `$?`，据此恢复退出码（PTY 没有独立退出通道）。空转计时器不 `unref`——它正是"标记永不到达"时的兜底。
-  - 为什么不接管部署的 persistent bash/pwsh：那套工具的 argv 由 `dsh-terminal-bash` 按**本机方言**构造（Windows 上是 PowerShell），把 `ssh://` cwd 硬塞进 `ctx.subprocess.spawnTerminal` 会让远端收到无法执行的命令行，错得比现在更隐蔽。独立工具让方言显式化。
-  - 仍未做：窗口尺寸变化（固定 80×24）、断线自动重连（掉线后需重新打开）、侧栏终端接远端后端。
+  - 通路一（工具）：`lib/shell.js` 的 `ShellManager` 在同一 (主机, 会话名) 上维持一个 `client.exec('sh -l', { pty })` 通道，`ssh_workspace_shell` 工具驱动它；命令以 `printf` 标记行回传 `$?`，据此恢复退出码（PTY 没有独立退出通道）。空转计时器不 `unref`——它正是"标记永不到达"时的兜底。
+  - 通路二（接管）：`lib/patch-terminal.js` 接管 `ctx.subprocess.spawnTerminal`，`spec.cwd` 为 `ssh://` 时改开 SSH PTY，部署自带的持久 bash/pwsh 工具因此可用。不复用其 `argv`（本机方言），改为启动远端自己的 `sh`；`inspectForeground` 返回 `undefined` 以选择上层「输出静默」兜底判定。
+  - 仍未做：窗口尺寸变化（工具通路固定 80×24；接管通路已支持 `resize`）、断线自动重连（掉线后需重新打开）、侧栏终端接远端后端。
 
-- [ ] **交互式远端终端（完整形态）**（价值高 · 成本高）
-  - 动机：`ssh_workspace_shell` 是「按次执行 + 保留状态」，不是真正的交互式 TUI 终端（无法流式读取、无 resize、无 sudo 提示的实时视角）。
-  - 现状备注：宿主已提供 `ctx.terminals` 注册表、`dsh-terminal-bash` 后端、侧栏终端 UI 与 `dsh-api-terminal-controller`——缺的只是让后端在 `cwd` 为 `ssh://` 时开通远端 PTY，而不是本机 node-pty。
-  - 验收：稳定的交互式 shell，支持窗口尺寸变化与断线重连。
+- [ ] **侧栏终端接远端后端**（价值中 · 成本低）
+  - 动机：`spawnTerminal` 已接管，`dsh-client-ui-sidebar-terminal` 与 `dsh-api-terminal-controller` 均已加载；缺的是确认侧栏终端的会话创建路径确实经过 `ctx.terminals` → `spawnTerminal`，并补一轮端到端验证。
+  - 验收：侧栏终端在 `ssh://` 会话里能开出一个可交互的远端 shell。
 
 ## 小修
 

@@ -12,7 +12,8 @@
   `ctx.inject(['fs'], …)` 在本地后端出现的那一刻执行接管；用
   `ctx.inject(['shell'], …)` 同样接管 `ctx.shell`（远程命令执行）；
   `ctx.inject(['subprocess'], …)` 接管 `ctx.subprocess`（远端 glob/grep 的
-  ripgrep 与变更追踪的 git）；
+  ripgrep 与变更追踪的 git），并在同一服务上接管 `spawnTerminal`（远端 PTY
+  终端）；
   用 `ctx.inject(['fs', 'workspaceRegistry'], …)` 恢复重启前登记的远端工作区；
   用 `ctx.inject(['fs', 'webServer'], …)` 注册浏览器半边的 HTTP 路由。
   这些注入都可以晚于本插件出现，安装顺序无关。
@@ -197,16 +198,14 @@ receiver 原样转发。
 
 ## 持久远端 shell
 
+两条并存的通路，服务不同的调用方：
+
+### 1. 独立工具 `ssh_workspace_shell`
+
 `lib/shell.js`：`ShellManager` 按 `(别名, 会话名)` 维持一个 `sh -l` 的 SSH PTY
 通道（`client.exec('sh -l', { pty: { cols, rows, term } })`），由
 `ssh_workspace_shell` 工具驱动。通道经 `engine.openChannel` 建立，因此
 `record.holds` 会钉住连接，空闲回收器不会在会话存活期间收走连接。
-
-**为什么不接管部署自带的 persistent bash/pwsh**：那两个工具的 argv 由
-`dsh-terminal-bash` 构造，方言跟着**本机平台**走（Windows 上起 PowerShell）。
-把 `ssh://` 的 cwd 塞进 `ctx.subprocess.spawnTerminal` 只会让远端收到一条它
-无法执行的命令行——失败点更靠后、更难解释。独立工具把"远端就是 POSIX sh"
-这件事显式写进工具描述。
 
 **退出码的取回**：PTY 没有独立的退出通道，所以每条命令后追加一行
 `printf '\n<marker>%s<marker>\n' "$?"`，`$?` 在命令结束后立即捕获。接收端用
@@ -221,6 +220,28 @@ receiver 原样转发。
 **关闭**：`release` 被包装成幂等——引擎的 `openChannel` 在通道 close 时也会释放
 一次，双重释放会让 `holds` 计数下溢。
 
+### 2. 接管 `ctx.subprocess.spawnTerminal`
+
+`lib/patch-terminal.js`：部署自带的持久 bash/pwsh 工具（`dsh-terminal-bash` 后端）
+最终经 `ctx.subprocess.spawnTerminal(spec)` 要一个 PTY，而那是**本机原语**。不接管
+时，`ssh://` 的 cwd 会让它要么失败、要么在本机对着一个只存在于远端的路径启动
+shell。接管后，`spec.cwd` 是 `ssh://` 就改开 SSH PTY 通道，返回满足后端契约的
+句柄（`output` / `write` / `resize` / `done` / `inspectForeground` /
+`signalForeground` / `terminate`），其余 cwd 原样交给本机原语。
+
+两个刻意的取舍：
+
+- **`argv` 不复用**。`dsh-terminal-bash` 按**本机方言**构造命令行（Windows 上是
+  PowerShell），远端 POSIX 主机无法执行。接管层改启动远端自己的交互式 `sh`——
+  这正是上一版不做接管的理由，但缺口比方言问题更严重：不接管时持久工具在远端
+  工作区上根本不可用。启动远端 `sh` 让宿主的工具链可用，代价是远端始终是 POSIX
+  方言（工具描述里已写明）。
+- **`inspectForeground` 返回 `undefined`**。本机句柄从进程表读前台进程组；一条
+  SSH 通道拿不到等价信息，而给一个错误答案更糟——上层会把"前台仍在运行"当真，
+  等满整个超时。返回 `undefined` 选择其文档化的「输出静默」兜底判定，正确且只是
+  略不精确。`signalForeground` 则按 PTY 语义写 `\x03`（SIGINT）/ `\x1c`（SIGQUIT），
+  无法用 PTY 表达的信号直接拒绝而不是静默忽略。
+
 ## 本机 ↔ 远端传输
 
 `lib/transfer.js`：`transferFile` 双向分块（256 KiB）流式拷贝，字节不经过对话。
@@ -231,6 +252,11 @@ receiver 原样转发。
 保证进度顺序稳定。
 
 单文件上限 1 GiB（`DEFAULT_MAX_BYTES`），超限直接拒绝而不是尝试分配。
+
+浏览器端另有一条 `GET /download` 流式路由（`lib/routes.js`），把字节直接写进响应
+而不是编码成 JSON：base64 会放大三分之一、且受 4 MiB 请求体上限约束，而下载的
+文件本来就可能远大于此。因为它不回答 JSON，所以不复用共享的 `guard()`，而是自己
+重新施加回环来源 + `Host` 头双重校验，并只接受 GET。
 
 ## 能力探测与推送式变更监视
 

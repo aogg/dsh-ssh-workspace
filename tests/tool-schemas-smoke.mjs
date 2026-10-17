@@ -51,7 +51,9 @@ const { RemoteFileSystem } = await import(pathToFileURL(path.join(pluginRoot, 'l
 
 const engine = new SshWorkspaceEngine({})
 const router = new RemoteFileSystem({ engine })
-const tools = workspaceTools({ get: () => undefined }, engine, router)
+const forwards = { list: () => [], open: async () => ({}), close: () => false }
+const shells = { list: () => [], run: async () => ({}), close: () => 0 }
+const tools = workspaceTools({ get: () => undefined }, engine, router, forwards, shells)
 
 for (const tool of tools) {
   console.log(`\n[${tool.name}]`)
