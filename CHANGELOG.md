@@ -2,6 +2,72 @@
 
 本文件记录 dsh-ssh-workspace 的版本变更。0.1.16 之前的版本为未公开的本地迭代，未收录。
 
+## [0.2.2] - 2026-10-17
+
+### 新功能
+
+- **端口转发恢复**：`ssh_workspace_forward` / `ssh_workspace_unforward` 与面板转发
+  区重新启用（0.1.21 屏蔽时保留了全部实现）。远端 dev server 映射到本机
+  `http://localhost:<port>`，映射随 SSH 连接存活，断开即关闭。
+- **持久远端会话**：新增 `ssh_workspace_shell`，在同一 (主机, 会话名) 上维持一个
+  POSIX `sh`，`cd`、导出的变量与后台任务跨调用保留。刻意不复用部署自带的
+  persistent bash/pwsh 工具——那套工具按**本机方言**构造命令行，Windows 上是
+  PowerShell，远端无法运行。
+- **本机 ↔ 远端传输**：新增 `ssh_workspace_transfer`，经 SFTP 双向拷贝文件，分块
+  流式、不经对话内容；上传先写同级暂存名再 rename 发布，目标文件在被替换前
+  始终是旧内容或完整新内容。`recursive: true` 可上传整个本地目录树。
+- **`ssh_workspace_exec` 支持后台任务**：`run_in_background: true` 返回 job id，
+  输出进入任务环形缓冲，可用 `job_output` / `job_kill` 收集与终止。
+
+### 变更
+
+- **推送式变更监视**：远端有 `inotifywait` 时改用事件推送，变更即时上报且不受
+  mtime 秒级精度限制；未安装或无法建立监视时自动回落到原有轮询（2s / 5s / 10s
+  自适应退避）。监视通道断开后自动重新挂上轮询，不会静默失效。
+- **能力探测**：挂载时一次性探测 `rg` / `git` / `inotifywait`，缺失项在工具返回
+  与面板里给出提示，不必等踩到 127 或发现变更面板不工作才知道。探测结果按主机
+  缓存，连接关闭时失效。
+- **每主机传输选项**：新增 `agentForward`（远端命令用本机 ssh-agent 密钥认证，
+  私钥不落到远端）与 `compress`（以 CPU 换带宽）。`~/.ssh/config` 的
+  `ForwardAgent` / `Compression` 同样被识别，面板里可开关。
+
+### 修复
+
+- 端口转发的状态查询链路此前仍在运行但入口被注释，导致"功能已屏蔽"的判断
+  与实际不符；本次一并澄清并恢复。
+
+## [0.2.0] - 2026-10-14
+
+### 新功能
+
+- 新增 `POST /api/dsh-ssh-workspace/hosts/disconnect`：关闭指定别名的连接池连接；
+  仍有在途操作时返回提示而不是强行断开。客户端主机卡片内联展示「已连接」状态，
+  可按需断开。
+
+### 变更
+
+- HTTP 路由增至 10 条，`lifecycle` 套件的预期路由数同步更新。
+
+## [0.2.1] - 2026-10-16
+
+### 修复
+
+- **exec 断连误判为正常完成**：通道 `close` 时既无退出码也无信号（`close(undefined)`）
+  与 `close(null)` 同等视为传输中断，不再settle成"命令成功"。
+- **rename 回退误删目标**：远端无 `posix-rename` 扩展时，`unlink` 目标前先 `stat`
+  确认其存在，否则原样抛出 rename 错误，避免失败时误删无关文件。
+- **`listDir` 串行 N+1 stat**：直接消费 `readdir` 返回的 `entry.attrs`，仅在缺失时
+  回退 `stat`，目录列举从 1+N 次串行往返降为 1 次。
+- **存储跨进程写入**：引入零依赖 `O_EXCL` 兄弟锁文件，`mutateHosts` 把读改写整体
+  放进临界区；create / update / delete / rememberHostKey / forgetHostKey /
+  encryptStoredSecrets 全部改走该路径。
+- **`StreamTail` 重复 join**：缓存 join 结果，`push` 时失效，`readFrom` / `finalize`
+  共用。
+
+### 测试
+
+- 新增 `tests/phase6-smoke.mjs`（36 项）与 `tests/store-lock-smoke.mjs`（15 项）。
+
 ## [0.1.24] - 2026-10-06
 
 ### 变更

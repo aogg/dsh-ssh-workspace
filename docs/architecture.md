@@ -195,6 +195,62 @@ receiver 原样转发。
 `ctx.inject(['fs', 'workspaceRegistry'])` 会把 registry 里所有 `ssh://` 项
 重新 `addRoot`——否则会出现「UI 里有、文件却打不开」的状态。
 
+## 持久远端 shell
+
+`lib/shell.js`：`ShellManager` 按 `(别名, 会话名)` 维持一个 `sh -l` 的 SSH PTY
+通道（`client.exec('sh -l', { pty: { cols, rows, term } })`），由
+`ssh_workspace_shell` 工具驱动。通道经 `engine.openChannel` 建立，因此
+`record.holds` 会钉住连接，空闲回收器不会在会话存活期间收走连接。
+
+**为什么不接管部署自带的 persistent bash/pwsh**：那两个工具的 argv 由
+`dsh-terminal-bash` 构造，方言跟着**本机平台**走（Windows 上起 PowerShell）。
+把 `ssh://` 的 cwd 塞进 `ctx.subprocess.spawnTerminal` 只会让远端收到一条它
+无法执行的命令行——失败点更靠后、更难解释。独立工具把"远端就是 POSIX sh"
+这件事显式写进工具描述。
+
+**退出码的取回**：PTY 没有独立的退出通道，所以每条命令后追加一行
+`printf '\n<marker>%s<marker>\n' "$?"`，`$?` 在命令结束后立即捕获。接收端用
+`<marker>(-?\d+)<marker>` 匹配"标记夹数字"，而不是 `lastIndexOf(marker)`——终端
+会回显携带标记的那行 `printf`（其中是字面 `%s`），只有真正执行完的那一行才有
+数字。收集到的正文开头是命令自身的回显，按首个换行截掉，避免模型把自己的输入
+读回成输出。
+
+**超时定时器不 `unref`**：它是"标记永不到达"时的唯一兜底；`unref` 之后进程空闲
+时它可以永远不触发，调用方就一直挂着——正是它要防的故障。
+
+**关闭**：`release` 被包装成幂等——引擎的 `openChannel` 在通道 close 时也会释放
+一次，双重释放会让 `holds` 计数下溢。
+
+## 本机 ↔ 远端传输
+
+`lib/transfer.js`：`transferFile` 双向分块（256 KiB）流式拷贝，字节不经过对话。
+上传**先写同级暂存名 `<目标>.dsh-up-<pid>-<ts>`，成功后 `publishRename` 发布**，
+因此目标在被替换前始终是旧内容或完整新内容；失败路径清掉暂存文件并按需保留
+目标原内容。下载读至 EOF 而不是依赖 stat 时的长度（传输期间变长的文件会被完整
+取回），本机同样先写暂存再 `rename`。`uploadTree` 递归上传本地目录，按名字排序
+保证进度顺序稳定。
+
+单文件上限 1 GiB（`DEFAULT_MAX_BYTES`），超限直接拒绝而不是尝试分配。
+
+## 能力探测与推送式变更监视
+
+`engine.probeCapabilities(alias)` 用一次 `command -v` 往返探测 `rg` / `git` /
+`inotifywait`，每个标记只在工具存在时打印，末尾打一个完成标记——**没有完成标记
+的应答一律按"未知"处理**，不会把一次异常应答误报成"工具缺失"。结果按别名缓存
+在 `engine.capabilities`，连接关闭（`closeRecord`）时失效，所以重连后会重新探测。
+只有"至少一项已确定"的结果才入缓存，避免一次坏探测污染整个会话。
+
+`remote-fs.js` 的 `watch` 先看探测结果：`inotifywait === true` 时走
+`startPushWatch`（`inotifywait -m [-r] -e create,modify,delete,move,attrib`），否则
+走原有轮询。推送路径的两条降级：
+
+- **建立期就结束**（无该工具、路径被拒）：静默回落到轮询，不报错；
+- **运行期断掉**（连接丢失、监视进程被杀）：通过 `onError` 上报，调用方重新挂上
+  轮询——一条失效的通知通道降级，而不是静默沉默。
+
+目录目标加 `-r`（与本地递归 watcher 对齐），文件目标不加（`inotifywait` 对文件
+加 `-r` 会被拒绝），因此先 stat 判断目标是文件还是目录。
+
 ## 引擎与连接模型
 
 `lib/engine.js`：每个别名一条 ssh2 长连接 + 一个 SFTP 通道（常开）——文件

@@ -38,12 +38,15 @@ const EXPECTED_TOOLS = [
   'ssh_workspace_unmount',
   'ssh_workspace_status',
   'ssh_workspace_exec',
+  'ssh_workspace_transfer',
+  'ssh_workspace_shell',
+  'ssh_workspace_forward',
+  'ssh_workspace_unforward',
 ]
 // Route paths the browser half must expose. Kept in step with ROUTES in
 // lib/routes.js: hosts, host save/delete/forget-key/disconnect, test, ls,
-// status, mount, unmount. The two port-forward routes stay commented out
-// there, so they are intentionally absent here too.
-const EXPECTED_ROUTES = 10
+// status, mount, unmount, forward, unforward.
+const EXPECTED_ROUTES = 12
 
 let failures = 0
 function check (label, ok, detail) {
@@ -119,7 +122,7 @@ console.log('\n[1] headless: tools only, no web server')
   check('plugin activated', app.get('tools') !== undefined)
   check('ctx.fs was patched', rawOf(app, 'fs')?.[INSTALLED] !== undefined)
   const names = [...app.get('tools').registered.keys()]
-  check('all five agent tools registered', EXPECTED_TOOLS.every(n => names.includes(n)), JSON.stringify(names))
+  check('all expected agent tools registered', EXPECTED_TOOLS.every(n => names.includes(n)), JSON.stringify(names))
 }
 
 // --- scenario 2: web server already up before the filesystem -----------------
@@ -135,7 +138,7 @@ console.log('\n[2] web server and tools already up, filesystem arrives last')
 
   const routes = app.get('webServer').routes
   check('ctx.fs was patched', rawOf(app, 'fs')?.[INSTALLED] !== undefined)
-  check('all five agent tools registered', [...app.get('tools').registered.keys()].length === EXPECTED_TOOLS.length)
+  check('all expected agent tools registered', [...app.get('tools').registered.keys()].length === EXPECTED_TOOLS.length)
   check(`exactly ${EXPECTED_ROUTES} HTTP routes registered`, routes.length === EXPECTED_ROUTES, String(routes.length))
   check('routes carry a path and a handler', routes.every(r => typeof r.path === 'string' && typeof r.handler === 'function'))
   check('no route path was double-registered',
@@ -173,7 +176,7 @@ console.log('\n[4] all services already up before the plugin mounts')
   await sleep(50)
 
   check('ctx.fs was patched', rawOf(app, 'fs')?.[INSTALLED] !== undefined)
-  check('all five agent tools registered', [...app.get('tools').registered.keys()].length === EXPECTED_TOOLS.length)
+  check('all expected agent tools registered', [...app.get('tools').registered.keys()].length === EXPECTED_TOOLS.length)
   check(`all ${EXPECTED_ROUTES} routes registered`, app.get('webServer').routes.length === EXPECTED_ROUTES, String(app.get('webServer').routes.length))
 }
 

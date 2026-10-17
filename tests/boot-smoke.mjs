@@ -171,6 +171,10 @@ const expectedTools = [
   'ssh_workspace_unmount',
   'ssh_workspace_status',
   'ssh_workspace_exec',
+  'ssh_workspace_transfer',
+  'ssh_workspace_shell',
+  'ssh_workspace_forward',
+  'ssh_workspace_unforward',
 ]
 for (const name of expectedTools) {
   check(`tool ${name} is registered`, registry.registered.has(name))

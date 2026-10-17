@@ -32,6 +32,8 @@ const SUITES = [
   'lifecycle',
   'phase6',
   'store-lock',
+  'transfer',
+  'shell',
   'boot',
   'secrets',
   'tool-schemas',

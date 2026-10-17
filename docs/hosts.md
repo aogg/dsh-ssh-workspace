@@ -31,15 +31,23 @@
 | `host` / `port` / `user` | 连接目标；默认端口 22 |
 | `auth` | `{ kind: "key" \| "password" \| "agent", keyPath?, passphrase?, password?, agentPath? }` |
 | `description` / `tags` | 备注与标签（`ssh_workspace_hosts` 可搜索） |
+| `agentForward` | 布尔。转发本机 ssh-agent，使远端命令（如远端 `git push`）能用本机密钥认证，私钥不落到远端 |
+| `compress` | 布尔。传输压缩，以 CPU 换带宽，慢链路（跨国 / 移动网络）下明显更快 |
 | `proxyJump` | 非空时解析明确拒绝（见下） |
 | `createdAt` / `updatedAt` | 时间戳 |
+
+`agentForward` / `compress` 都是**可选布尔**：缺省等于 ssh2 默认（关闭），
+所以老版本写入的条目与新版本字节级兼容。面板的主机编辑器里以复选框呈现，
+勾掉即从文件中删除该字段，不会残留 `false`。
 
 ## ~/.ssh/config 回退
 
 只解析**具体的 `Host` 块**（含通配符的块忽略），读取 `hostname` / `port` /
-`user` / `identityfile`（`%d` 展开为家目录）/ `password` / `identityagent`，
-同键按 OpenSSH 的 first-wins 规则。`Include` / `Match` / 通配符块会被跳过
-而不是猜着解析——目标是「够用的回退」，不是完整解析器。
+`user` / `identityfile`（`%d` 展开为家目录）/ `password` / `identityagent` /
+`forwardagent` / `compression`，同键按 OpenSSH 的 first-wins 规则。
+`ForwardAgent` / `Compression` 按 OpenSSH 的 yes/no 语义归一为布尔（只有显式
+`yes` 才算开启，其余一律关闭）。`Include` / `Match` / 通配符块会被跳过而不是
+猜着解析——目标是「够用的回退」，不是完整解析器。
 
 ## 认证与凭据
 
