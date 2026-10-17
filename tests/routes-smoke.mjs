@@ -162,5 +162,51 @@ check('the transfer route is registered', routes.some(route => route.path === RO
     state.status === 200 && JSON.parse(state.body).error !== undefined, state.body)
 }
 
+// --- upload ---------------------------------------------------------------
+const upload = routes.find(route => route.path === ROUTES.upload)
+check('the upload route is registered', upload !== undefined)
+
+{
+  const { res, state } = fakeRes()
+  await upload.handler(fakeReq({ remoteAddress: '10.0.0.5', method: 'POST' }), res)
+  check('a non-loopback upload is refused', state.status === 403, String(state.status))
+}
+
+{
+  const { res, state } = fakeRes()
+  await upload.handler(fakeReq({ method: 'POST', headers: { host: 'evil.example:4074' } }), res)
+  check('a rebinding Host header is refused for upload', state.status === 403, String(state.status))
+}
+
+{
+  const { res, state } = fakeRes()
+  await upload.handler(fakeReq({ method: 'GET', headers: { host: 'localhost:4074' } }), res)
+  check('a non-POST upload is refused', state.status === 405, String(state.status))
+}
+
+{
+  const { res, state } = fakeRes()
+  await upload.handler(fakeReq({
+    method: 'POST',
+    url: `${ROUTES.upload}?alias=a&path=${encodeURIComponent('/srv')}`,
+    headers: { host: 'localhost:4074' },
+  }), res)
+  check('an upload without a name is refused', state.status === 400, String(state.status))
+}
+
+{
+  // A name carrying a separator would escape the directory being browsed.
+  for (const hostile of ['../escape.txt', 'a/b.txt', 'a\\b.txt', '..', '.']) {
+    const { res, state } = fakeRes()
+    await upload.handler(fakeReq({
+      method: 'POST',
+      url: `${ROUTES.upload}?alias=a&path=${encodeURIComponent('/srv')}&name=${encodeURIComponent(hostile)}`,
+      headers: { host: 'localhost:4074' },
+    }), res)
+    check(`the name ${JSON.stringify(hostile)} is refused as a path escape`, state.status === 400,
+      `status=${state.status} body=${state.body}`)
+  }
+}
+
 console.log(`\n=== ${passed} passed, ${failures} failed ===`)
 process.exit(failures === 0 ? 0 : 1)

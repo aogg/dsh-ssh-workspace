@@ -45,8 +45,8 @@ const EXPECTED_TOOLS = [
 ]
 // Route paths the browser half must expose. Kept in step with ROUTES in
 // lib/routes.js: hosts, host save/delete/forget-key/disconnect, test, ls,
-// status, mount, unmount, forward, unforward, transfer, download.
-const EXPECTED_ROUTES = 14
+// status, mount, unmount, forward, unforward, transfer, download, upload.
+const EXPECTED_ROUTES = 15
 
 let failures = 0
 function check (label, ok, detail) {
