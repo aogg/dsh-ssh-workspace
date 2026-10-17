@@ -36,6 +36,8 @@ const SUITES = [
   'shell',
   'terminal',
   'transport',
+  'forward',
+  'capabilities',
   'routes',
   'boot',
   'secrets',
