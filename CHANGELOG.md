@@ -7,6 +7,18 @@
 > 0.2.3 的 tag 已推送，但该版本从未出现在 npm 上（`npm view` 当时 latest 仍为 0.2.2），
 > 因此 0.2.3 与 0.2.4 的全部改动都在本版首次发布到 npm。
 
+### 修复
+
+- **`Promise.withResolvers()` 让 CI 在 Node 20 上崩溃**：`lib/patch-terminal.js` 用了这个
+  Node 22 才加入的 API，而 `package.json` 声明 `engines.node >= 20`、CI 也按 Node 20 跑。
+  结果是终端句柄一创建就抛 `TypeError`，`terminal-smoke` 整套崩溃、CI 与 Release 全红——
+  **自 0.2.3 把 PtyTerminal 加进来起就一直红**，0.2.3 因此压根没发出去（npm 上 latest
+  停在 0.2.2）。本地 Node 是 v24，有这个方法，所以本机永远复现不出来。
+  改为模块内的 `deferred()`（形状与该方法返回值一致），并保留一行注释说明为何不用
+  现成 API——否则下一个人会"顺手简化"回去。
+  验证方式：把 `Promise.withResolvers` 从全局删掉以模拟 Node 20，修复前终端套件抛
+  `TypeError` 崩溃，修复后全套 23/23 通过。此后 CI 才是可信的。
+
 ### 文档
 
 - **新增 [docs/features.md](./docs/features.md)**：按能力域（工作区 / 文件读写 / 远端执行 /
