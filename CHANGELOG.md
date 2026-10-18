@@ -6,6 +6,65 @@
 
 ### 修复
 
+- **「仅可查看」没能挡住远端写入**：会话切到 `read-only` 后，`write` / `edit` 仍能改写远端
+  文件，且**没有任何提示**。原因是本机沙箱的实现位于 `SandboxedFileSystem.checkedTarget`
+  这个原型方法里，而插件用同名自有属性覆盖了 `writeText` / `editText`——远端分支根本不
+  经过它，于是三档模式对远端写入完全一致。更糟的是模型的系统提示明确要求它「不要仅凭
+  策略就拒绝，先试」，所以它会试、会成功，从它的视角看完全合规。
+  现在 `#assertWritable` 先按 `sandboxPolicy.mode` 判定（`writeText` / `editText` 的**第五
+  个参数**，宿主两个工具都传），`read-only` 以 `FS_SANDBOX_DENIED` 拒绝，文案与本地一致。
+  `editText` 此前连这个参数都没接，一并补上。模式缺席时回落到后端 `sandboxMode`（部署
+  默认），而不是被读成「不限制」。反向验证：移除这条判定后 6 条新断言立刻变红。
+- **围栏外写入会被告知「在 danger-full-access 下被拒，可升权重试」**：挂载围栏与停用围栏
+  过去都返回 `FS_SANDBOX_DENIED`，而宿主的 `tool-fs` 会把这个码**改写成**
+  `[sandbox: file access denied under <mode> mode]` 加一句升权提示。于是出现两句都错的
+  话：模式可能已经是最宽的，而升权也绝不会让一个目录变成已挂载。现在两者各用自己的码
+  ——挂载围栏 `FS_OUTSIDE_WORKSPACE`、停用围栏 `FS_PERMISSION_DENIED`（仍是 403）——原文
+  直达模型。反向验证：改回旧码后 2 条断言变红。`/download` 的状态码映射同步补上
+  `FS_OUTSIDE_WORKSPACE` → 403。
+- **`ssh_workspace_transfer` 的上传同样绕过了模式**：它是插件自己的工具，不经 `ctx.fs`，
+  所以路由那层门禁看不到它——`read-only` 会话能上传文件，而同一会话的 `write` 已被拒。
+  现在它在执行前从会话解析 `sandboxPolicy`（与宿主工具同一条路径），`read-only` 下拒绝上传；
+  下载只读远端、写本机，不设门禁。策略服务**缺席**＝部署不受限（保持原行为），
+  策略**解析失败**按 `read-only` 处理——拒绝一次可重试的上传，好过在「仅可查看」会话里静默写入。
+  反向验证：移除门禁后 3 条断言变红（上传返回 `{ok:true}`）。
+- **命令执行面完全不看模式（上一轮修复遗漏的主路径）**：上一条只补了文件写入，而插件改远端
+  有**六条**互不共享调用链的路。真实会话里发生过：`read-only` 会话执行
+  `ssh_workspace_exec { command: "rm /home/qiyk/test/test.py" }`，拿到 `[exit code: 0]`，
+  同一会话的 `write` 却是会被拒的。现在新增 `lib/mode-gate.js`，`ssh_workspace_exec`、
+  `ssh_workspace_shell`、以及 workdir 为 `ssh://` 的 `bash` / `pwsh`（`patch-shell.js`）
+  共用同一份判定，`read-only` 下直接拒绝。
+  **为什么是拒绝而不是围栏**：本机沙箱回答「这条命令能不能写」靠的是把**进程**限制在工作区
+  根内的内核边界（bwrap / seatbelt / 受限 ACL 令牌），这些机制一个也跨不过 SSH；远端命令以
+  远端登录用户的完整权限运行，没有哪个 seam 能接收一个 `workspaceRoot`。用文本匹配猜命令是否
+  会写也不是边界（`sh -c 'rm -rf ~'`、`find -delete`、`python -c …` 都像纯文本）。所以要么允许
+  任意远端命令、让模式成为空话，要么拒绝、让模式说真话——选后者，并在文案里写明原因与出路。
+  读取不受影响（`read` / `glob` / `grep` 走 SFTP）。`ssh_workspace_shell` 的 `close: true`
+  不受限：关闭不改变远端任何东西，否则「仅可查看」会连已开着的会话都关不掉。
+  反向验证：把门禁改成空操作后 14 条断言变红，其中一条正是 `{"success":true,"exitCode":0}`。
+- **`terminal_open` / 侧边栏终端是第六条没被堵的路**：上一轮把它记为「已知缺口」并称当前部署
+  不可达——那个判断站不住。`ctx.subprocess.spawnTerminal` 的 spec 里确实没有 owner（只有
+  `cwd` / `argv` / `env`），门禁不能装在那里；但它也不是单一入口，宿主有**两条**路会走到它：
+  `terminal_open` / `terminal_send` 经 `ctx.terminals` → `dsh-terminal-bash`，而**内建侧边栏
+  终端**（`dsh-api-terminal-controller`）**直接**调用 `spawnTerminal`，完全不经过
+  `ctx.terminals`。所以「把门禁装在 `ctx.terminals.spawn`」这个结论是错的——它会漏掉第二条，
+  而只测工具路径的用例仍会通过。门禁现在装在 `patch-terminal.js` 的路由里，那是两条路唯一的
+  汇合点；会话身份取自 `spec.env.DSH_SESSION_ID`（两个调用方都写它），再用
+  `ctx.get('agents').get(id)` 换成 session。
+  判定分**两半**，因为只拒「打开」只能保护本来就处于 `read-only` 的会话：开 PTY 时拒绝且不建
+  通道；handle 的每次 `write` 重新读模式，在 `workspace-write` 下开的 shell 被切成 `read-only`
+  后立刻停止接受命令——这是实际更常见的顺序（先开终端干活，再收窄模式）。控制字节例外：
+  SIGINT 与关闭路径必须可用，否则「仅可查看」会变成「连你已经启动的命令都停不掉」。
+  反向验证：把两处门禁都改成空操作后 6 条断言变红，其中 `reached=1` 证明通道真的被打开了。
+- **测试**：新增 `mode-gate-smoke`（88 项，覆盖三档模式的解析结果、六种组合的放行/拒绝、
+  「拒绝时未触达主机」、后台路径、持久 shell 的 close 例外、本地 workdir 透传、
+  终端开/写两道门禁与控制字节例外、`workspace-write` 的范围判定（会话内 / 兄弟根 / 跨主机根 /
+  `..` 拼写 / 本地 root 不参与比较）、策略解析失败与真实 read-only 的文案可分性、
+  以及路由层真的读这份判定（`withSftp` 调用计数）、公告一致性），
+  `detach-smoke` 62 → 72 项（模式围栏 8 项 + 错误码可分性 2 项），
+  `transfer-smoke` 21 → 25 项（工具级模式门禁：拒绝上传 / 允许下载 / 无策略 / 策略解析失败，
+  以及上传的范围判定：会话内允许 / 会话外拒绝 / `danger-full-access` 放行），
+  `live-smoke` 与 `acceptance-smoke` 各补 4 项真机 / 端到端断言。全套 24/24 通过。
 - **下载失败被浏览器存成文件**：`GET /download` 在响应头发送前出错时回答
   **200 + JSON**，而浏览器半边只判 `response.ok`——于是
   `{"error":"remote file does not exist: /srv/x.txt"}` 被当作文件内容存了下来，
@@ -17,8 +76,36 @@
   裸 `Error` 也改成带 `FsError` 码的错误，否则「文件不存在」会答 500 并被读成
   服务端故障。反向验证：把状态码改回 200，3 条新断言立刻变红。
 
+- **`workspace-write` 没有收窄到会话自己的工作区**：本地后端用 `writableRoots(policy)` 判定，
+  第一项就是 `policy.workspaceRoot`；远端只问「是否落在**任一**已挂载根内」，而根集合是部署级的。
+  后果实测确认：会话工作区在 `ssh://qiyk/home/dev/proj` 时，可以写同一主机上的兄弟根，
+  也能写**另一台主机**上的已挂载根——这两种本地会话都做不到。现在 `#assertWritable` 在模式判定
+  之后、挂载围栏之前加入范围判定（`workspaceWriteScopeRefusal`），`ssh_workspace_transfer` 的
+  上传走同一份判定，两条写路径不会再分叉。
+  此前文档给出的理由是**错的**，不只是遗憾：它说 workspace root「是这台机器上的路径」，
+  对远端没有意义。实测 `SandboxPolicyService.resolve({ session })` 返回的是
+  `session.header.cwd` 原样——远端会话拿到的就是 `ssh://qiyk/home/dev/proj`，可以直接比较。
+  无 agent 的调用解析出的是部署的本地 root，那种拼写不参与比较（否则每个远端写入都会被误拒）。
+  反向验证：把范围判定改成空操作后 10 条断言变红，其中 `withSftp=1` 证明写入真的到达了主机；
+  上传路径另有 2 条变红并返回 `{"ok":true}`。三处文档（`features.md` / `architecture.md` /
+  `protocol.md`）与 `troubleshooting.md` 的判据表同步改了那句假理由。
+- **策略解析失败被说成「用户选了仅可查看」**：`sessionModeOf` 的 fail-closed 是对的，但拒绝文案
+  过去一律说「会话沙箱模式是 read-only」。解析失败（例如 `node:path` 的 `ssh://` 补丁没装上，
+  `resolve()` 就会对每个远端会话抛错）时，用户面板上明明是 `danger-full-access`，模型却被告知
+  当前是仅可查看——而且「切换模式」这条建议根本无效，坏的正是解析器。
+  新增 `sessionPolicyOf` 把原因一起返回，`assertRemoteCommandAllowed` 接受完整策略对象，
+  文案改为说明这是接线问题、切换模式无用、并引用底层错误。真正的 `read-only` 文案不变。
+- **`ssh_workspace_exec` / `shell` 的拒绝文案不再假装能升权**：文案仍不承诺
+  `sandbox_permissions`（这一族工具没有该参数），但补上了「切换模式」的明确出路。
+
 ### 文档
 
+- **命令执行面受模式约束**：`features.md` 新增「命令执行是另一条独立的写路径」一节，
+  列出六条改远端的路及各自的判定位置，并说明为什么是拒绝而非围栏（当时 `terminal_*` 仍为空缺，
+  同轮稍后已补齐，见上一节的「`terminal_open` / 侧边栏终端是第六条没被堵的路」）；
+  `protocol.md` 的围栏一节、`tools.md` 的通用约定、`troubleshooting.md` 的判据表同步补充。
+  模型公告里「本机沙箱策略不适用于远端命令」那句原本是完整描述，现在补上
+  「因此 read-only 下命令执行也被拒绝」——否则模型会把一条它没预料到的拒绝当成 bug 反复重试。
 - **修正与实现相反的描述**：`ui.md` 原称「浏览目录」入口「目前屏蔽（去掉注释即可
   恢复）」，实际它从未被注释过——按钮无条件渲染、面板接上了回调、对话框按状态渲染，
   `git log -S` 只回溯到 0.1.16 的初始提交。这句话会让读者以为整套能力不存在，
@@ -32,7 +119,13 @@
   `features.md`、`CHANGELOG.md` 里写成 POST，源码是 `guard(…, 'GET')`。
   `unmount-modes.md` 把「160 项」算给了三个套件，它其实只是 `tool-schemas` 单独一项。
 - **补全错误码**：`troubleshooting.md` 的错误码表少了 `FS_ABORTED`（源码共 13 个），
-  `features.md` 的「同一套 `FS_*` 码」后面只列了 7 个却没说这是节选。
+  `features.md` 的「同一套 `FS_*` 码」后面只列了 7 个却没说这是节选。本轮新增远端专用的
+  `FS_OUTSIDE_WORKSPACE` 后，`features.md` 改为「同一套 `FS_*` 码 + 一个远端专用码」，
+  `troubleshooting.md` 补上三行（模式拒绝 / 挂载围栏 / 停用围栏）与一张「你看到的 → 真实
+  原因 → 怎么办」对照表，`protocol.md`、`architecture.md`、两份 README 的围栏表述同步更正。
+- **澄清「沙箱不适用」的范围**：`architecture.md` 的「沙箱边界」一节说的是 `ctx.shell` /
+  `ctx.subprocess` 的 spec，但字面上容易被读成「所有远端写入都不受模式约束」——那正是本轮
+  修掉的 bug。已加注说明文件写入与命令执行在这一点的区别。
 - **`CHANGELOG` 版本顺序**：`0.2.0`（10-14）曾排在 `0.2.1`（10-16）**之前**，
   与「新→旧」的全篇顺序相反，已按日期归位。
 - **补全遗漏的能力描述**：「浏览目录」对话框此前在 `features.md` 与两份 README 里
@@ -59,7 +152,13 @@
 ### 测试
 
 - `routes-smoke` 118 → **121 项**：下载失败必须是非 2xx、缺文件答 404、目录目标答 400。
-  全套 `node tests/run.mjs` **23/23** 通过，活跃 18 个套件合计 **666 项**断言。
+  全套 `node tests/run.mjs` **24/24** 通过，活跃 19 个套件合计 **775 项**断言。
+- **计数修正（清点暴露出的旧错误）**：此前多处文档写「活跃 18 个套件合计 683 项」，那是
+  **错的**，两个独立原因叠加——上一轮新增的 `mode-gate-smoke`（46 项）根本没被算进总数，
+  而 `secrets-smoke` 打印的是 `=== all checks passed ===`（不含 `N passed` 字样），历次
+  按摘要行求和都把它的 26 项漏掉了。本轮改为按 `PASS` 行逐个数，实测 24 个套件、活跃 19
+  个、742 项，`development.md` / `features.md` / `unmount-modes.md` 三处同步改为实测值。
+  更早的版本段落保留当时的原始数字，不再回改。
 
 ## [0.2.4] - 2026-10-18
 

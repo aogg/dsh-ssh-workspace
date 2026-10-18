@@ -8,9 +8,10 @@
 
 | 错误码 | 含义 | 常见触发 |
 | --- | --- | --- |
-| `FS_SANDBOX_DENIED` | 写入越出已挂载的远端工作区 | 目标路径不在任何已挂载根之下——例如向未挂载的 `ssh://` 路径写文件；先 `ssh_workspace_mount`。写入 / 删除前还会对目标父目录做一次服务器 `realpath` 裁决，**经符号链接的真实落点越界同样被拒** |
+| `FS_OUTSIDE_WORKSPACE` | 写入越出已挂载的远端工作区 | 目标路径不在任何已挂载根之下——例如向未挂载的 `ssh://` 路径写文件；先 `ssh_workspace_mount`。写入 / 删除前还会对目标父目录做一次服务器 `realpath` 裁决，**经符号链接的真实落点越界同样被拒** |
+| `FS_SANDBOX_DENIED` | 本机沙箱模式不允许写入 | 会话处于 **`read-only`** 时对远端文件 write / edit。远端目标不会经过本机的 `SandboxedFileSystem.checkedTarget`，所以这条判定由插件自己补上，文案与本地一致。`workspace-write` 要求目标在**会话自己的**工作区之内（远端会话的 root 就是那个 `ssh://` 拼写，可直接比较）；落在会话工作区外的目标同样返回此码，文案会点名会话工作区。**策略解析失败也返回此码**，但那时的文案会说明是接线问题而非你选的模式——切换模式不会有用 |
 | `FS_NOT_FOUND` | 远端目标不存在 | 路径拼写错误、目录已被删除；也用于"不是合法远端路径"的输入 |
-| `FS_PERMISSION_DENIED` | 远端账号权限不足 | SFTP 返回 Permission denied；挂载前可先用面板「测试连接」+ 目录浏览确认可写 |
+| `FS_PERMISSION_DENIED` | 远端账号权限不足 | SFTP 返回 Permission denied；挂载前可先用面板「测试连接」+ 目录浏览确认可写。**工作区被停用时也返回此码**，文案带 `the remote workspace is detached` |
 | `FS_STALE_VERSION` / `FS_NOT_OBSERVED` | 并发修改 / 未读先写 | 读过后文件被改动再写回；或直接覆盖一个从未读过的既有文件（先 read 再 write） |
 | `FS_AMBIGUOUS_EDIT` / `FS_EDIT_NOT_FOUND` | `edit` 的 `old_string` 匹配不唯一 / 未命中 | 提供更精确的 `old_string` 或 `replace_all: true`；未命中时先重新 read 确认内容 |
 | `FS_NOT_TEXT` | 二进制或非法 UTF-8 | 读 / 编辑二进制文件被拒；改用 `ssh_workspace_exec` 配合远端命令处理 |
@@ -34,7 +35,36 @@ cannot access "ssh://myserver/home/user/project/src/app.ts": the remote workspac
 
 恢复方式：面板点该行的「启用」，或调 `ssh_workspace_enable`（默认同时把归档的会话恢复出来）。
 只有 SSH 连接本身（`test`、目录浏览、端口转发）不受停用影响——这也是为什么「测试连接」还能成功却什么都读写不了：
-连接活着，围栏关着。
+连接活着，围栏关着。代码是 `FS_PERMISSION_DENIED`（不是 `FS_SANDBOX_DENIED`）：停用不是沙箱策略，
+升权也解不开一个被关掉的工作区。
+
+### 「仅可查看」真的会挡住写入——包括远端
+
+会话切到 `read-only` 后，远端 write / edit 会以 `[sandbox: file access denied under read-only mode]`
+被拒。这一点是**插件自己补上的**：本机沙箱只在 `ctx.fs` 的本地实现里生效，远端目标走的是插件的
+SFTP 分支，从来不会经过它。
+
+**同样被拒的还有命令执行**：`ssh_workspace_exec`、`ssh_workspace_shell`，以及 workdir 落在远端的
+`bash` / `pwsh`。它们返回的不是 `[sandbox: …]` 标记，而是一句自述原因的文案——因为这里根本没有沙箱
+可以围栏（本机内核边界跨不过 SSH），插件能做的是拒绝。文案里会写明「切到 workspace-write 或
+danger-full-access」。读（`read` / `glob` / `grep`）不受影响。
+
+> 这条曾经是真实缺口：`read-only` 会话跑 `ssh_workspace_exec { command: "rm …" }` 拿到 `[exit code: 0]`。
+> 修的是「命令执行面从不看模式」，不是某一条命令的特判。
+
+判据是错误码与文案：
+
+| 你看到的 | 真实原因 | 怎么办 |
+| --- | --- | --- |
+| `[sandbox: … under read-only mode]` | 会话模式是仅可查看 | 切到 `workspace-write` / `danger-full-access`，或对单次调用升权 |
+| `cannot run a remote command …: the session sandbox mode is "read-only"` | 同上，但目标是命令而非文件 | 切换会话模式；升级对这条不起作用，插件工具没有 `sandbox_permissions` 字段 |
+| `FS_OUTSIDE_WORKSPACE` + `outside every mounted remote workspace` | 目标不在任何已挂载根下 | 先 `ssh_workspace_mount`；**升权没有用**，模式再宽也不会让目录变成已挂载 |
+| `FS_PERMISSION_DENIED` + `the remote workspace is detached` | 工作区被停用 | 面板「启用」或 `ssh_workspace_enable` |
+
+> 这三种失败过去都返回 `FS_SANDBOX_DENIED`，而宿主的工具层会把该码改写成
+> `[sandbox: file access denied under <mode> mode]` 加一句「可升权重试」。于是围栏外写文件会得到
+> 「在 danger-full-access 下被拒」这种自相矛盾的提示，模型接下来会去申请一个对「没挂载」毫无作用的升级。
+> 拆成独立的码，是为了让这几句真话能原样到达模型眼前。
 
 ## 连接问题
 

@@ -49,12 +49,51 @@ Cordis 拒绝在同一作用域第二次 `provide('fs')`（实现按服务的隔
 会被同一 cwd 再次判为远端，形成无限互相委派（表现为预览点击后
 `Maximum call stack size exceeded`）。
 
-### 写入围栏与符号链接裁决
+### 写入围栏、沙箱模式与符号链接裁决
+
+**沙箱模式与挂载根是两件事**，回答的问题不同，因此用不同的错误码：
+
+| 围栏 | 问题 | 拒绝码 | 宿主如何处理 |
+| --- | --- | --- | --- |
+| 沙箱模式 | 这个会话允许写吗（`read-only`） | `FS_SANDBOX_DENIED` | 改写成 `[sandbox: …]` 标记 + 升权提示 |
+| 挂载根 | 这个目录被服务吗 | `FS_OUTSIDE_WORKSPACE` | 原文直达模型 |
+| 工作区停用 | 用户把它关了吗 | `FS_PERMISSION_DENIED` | 原文直达模型 |
+
+模式判定必须在远端重做一次，因为本机的实现（`SandboxedFileSystem.checkedTarget`，见
+`@deepseek-ai/dsh-fs-sandbox`）是**原型上一个本地方法**：插件的同名自有属性覆盖了
+`writeText` / `editText`，远端分支从不调用它。少了这一步，`read-only` 会话照样能改写
+远端文件，且没有任何提示——而模型的系统提示恰好要求它「不要仅凭策略就拒绝，先试」，
+于是这次越权在它看来是完全合规的成功。
+
+模式取自 `writeText` / `editText` 的**第五个参数** `sandboxPolicy`（宿主的 `write` /
+`edit` 工具都会传），缺席时回落到后端 `sandboxMode`（部署默认）——缺席不等于「不限制」，
+它表示一次无 agent 的调用，本地后端对同样的调用也用部署默认。
+
+`workspace-write` 在远端**比较会话自己的 workspace root**，与本地一致：本地后端用
+`writableRoots(policy)` 判定，第一项是 `policy.workspaceRoot`。这个值由
+`SandboxPolicyService.resolve` 返回 `session.header.cwd` 原样得到——远端会话就是那个
+`ssh://` 拼写，可以直接与目标比较。落在会话工作区之外的写入返回 `FS_SANDBOX_DENIED`，
+文案点名会话工作区与出路；跨主机的已挂载根同样被拒。
+
+（此前这里写的是「不比较，因为那台机器的路径对远端无意义」。那句话是错的：实测
+`resolve()` 返回的就是远端拼写，可用；而且不比较会让一个会话能写同一主机上的兄弟根，
+甚至另一台主机的根——本地做不到的事。）
+
+约束不了的是**命令**：限制一个进程需要内核边界，它跨不过 SSH，所以 `workspace-write`
+下远端命令不会被收窄到工作区。这是如实记录的限制。
+
+`node:fs` 桥（`fs-shim.js`）刻意不看模式：它服务宿主自己的记账调用（新建会话 cwd 的
+`mkdir`、注册表的 `stat`/`realpath`、变更追踪的快照拷贝），本地同一批调用同样的不受
+`ctx.fs` 沙箱约束；而且它只看得到部署默认、看不到会话级覆盖，据此判定会给出错误结论。
+模型面向的写路径走 `ctx.fs` 与插件自己的工具，那条路上模式是生效的——但插件工具不经
+`ctx.fs`，所以它们各自解析 `ctx.sandboxPolicy.resolve({ session })`（见 `tools.js` 的
+`sessionSandboxPolicy`，它是 `mode-gate.js` 里 `sessionPolicyOf` 的薄适配器，好让
+「解析失败」这个原因随策略一起传下去）：`ssh_workspace_transfer` 的上传被门禁，下载不被门禁。
 
 词法围栏（`isRemotePathUnder`，规范化后做前缀比较）只是快路径；写 / 删
 操作在落盘前还做一次**服务器 `realpath` 裁决**（`assertFencedRealpath`，
 `lib/remote-fs.js`）：目标**父目录**经 `sftp.realpath` 解析后必须仍落在已
-挂载根内，否则 `FS_SANDBOX_DENIED`。没有这一步时，围栏内一个指向外部的
+挂载根内，否则 `FS_OUTSIDE_WORKSPACE`。没有这一步时，围栏内一个指向外部的
 符号链接（或中间目录为符号链接）会让词法判断与真实落点不一致，写入 / 删除
 即可越界。覆盖点为所有写、删入口——原子替换（`#publish`）、`copyFile` 直写
 与 `rm` 桥、`mkdir`；realpath 读取失败按 `FS_NOT_FOUND` 语义处理。
@@ -119,6 +158,10 @@ Cordis 拒绝在同一作用域第二次 `provide('fs')`（实现按服务的隔
 按 POSIX 语义执行——远端不是 PowerShell，公告已向模型说明。**沙箱边界**：
 本机文件沙箱不跨 SSH，spec 上的 `sandboxPolicy` 对远端 workdir 不适用，远端
 命令以远端登录用户的完整权限运行。
+
+> **文件写入与命令执行不同**：`ctx.fs` 的远端分支**会**读取 `sandboxPolicy.mode`
+> （见「沙箱模式与挂载根是两件事」）。这里的「不适用」只指 `ctx.shell` /
+> `ctx.subprocess` 的 spec，不适用于 read / write / edit。
 
 引擎的 `exec` 输出按 **UTF-8 流式解码**（每流一个 `StringDecoder`），多字节
 字符跨 chunk 边界不再乱码；输出上限按**字节**记账，截断回退到完整字符边界

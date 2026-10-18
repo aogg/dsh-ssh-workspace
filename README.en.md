@@ -189,7 +189,7 @@ become inaccessible since the host no longer exists.
 | Atomic writes | A write first lands in a staging file in the same directory, then replaces the target. OpenSSH's `posix-rename@openssh.com` is preferred; when the server doesn't support it, the plugin degrades to "delete, then rename" (no longer atomic in that case) |
 | Line-ending fidelity | Editing a CRLF file won't rewrite it to LF |
 | Binary and encoding | Text reads reject NUL / invalid UTF-8; `readBytes` returns raw bytes |
-| Write fence | Remote writes may only land inside a mounted remote workspace; anything outside returns `FS_SANDBOX_DENIED`. Reads are unrestricted |
+| Write fence | Remote writes may only land inside a mounted remote workspace; anything outside returns `FS_OUTSIDE_WORKSPACE`. **The `read-only` mode also blocks remote writes** (`FS_SANDBOX_DENIED`). Reads are unrestricted |
 | Large files stream | Previews and `read` stream remote files in 256 KiB chunks instead of loading the whole file into memory |
 | Remote changes auto-refresh | Remote `inotifywait` push events are preferred (immediate, not bound by mtime precision); without it the plugin falls back to polling — about every 2 seconds, backing off while idle (after 15 quiet rounds to 5 s, after 30 to 10 s) and snapping back to 2 s on any change. On the polling path SFTP metadata has no sub-second timestamps, so consecutive rewrites of equal size within the same second may not trigger a refresh; additions, removals, and renames always do |
 

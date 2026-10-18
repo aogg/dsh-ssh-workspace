@@ -18,7 +18,7 @@
 | 浏览器 HTTP 路由 | 22 条（前缀 `/api/dsh-ssh-workspace/`，仅回环 + Host 头校验） |
 | 接管的服务 seam | 4 个：`ctx.fs`、`ctx.shell`、`ctx.subprocess`、`ctx.subprocess.spawnTerminal` |
 | 桥接的宿主内建模块 | 2 个：`node:fs/promises`、`node:path` |
-| 冒烟测试套件 | 23 个（活跃 18 个合计 666 项断言，5 个需真实主机 / 完整 DSH 树则 SKIP） |
+| 冒烟测试套件 | 24 个（活跃 19 个合计 775 项断言，5 个需真实主机 / 完整 DSH 树则 SKIP） |
 
 设计前提：**不注册第二个 fs 服务**。远端方法装在部署已挂载的那一个 `ctx.fs` 实例上，
 `ssh://` 路径走 SFTP，其余路径原样转发给原后端——因此本地工作区的一切行为不受影响。
@@ -44,7 +44,7 @@
 
 | 功能 | 说明 |
 | --- | --- |
-| 完整错误语义 | 与本地同一套 `FS_*` 码，共 13 个：`FS_STALE_VERSION`、`FS_NOT_OBSERVED`、`FS_AMBIGUOUS_EDIT`、`FS_EDIT_NOT_FOUND`、`FS_NOT_TEXT`、`FS_TOO_LARGE`、`FS_NOT_FOUND`、`FS_PERMISSION_DENIED`、`FS_NOT_DIRECTORY`、`FS_NOT_REGULAR_FILE`、`FS_SANDBOX_DENIED`、`FS_IO_ERROR`、`FS_ABORTED`（全部码的触发条件见 [troubleshooting.md](./troubleshooting.md)） |
+| 完整错误语义 | 与本地同一套 `FS_*` 码，另加一个远端专用的 `FS_OUTSIDE_WORKSPACE`（详见下文与 [troubleshooting.md](./troubleshooting.md)） |
 | 原子写入 | 先落**同目录**暂存文件再 `rename` 发布；优先 `posix-rename@openssh.com`，服务器不支持时退化为「先删后改名」（此时不再原子） |
 | 符号链接裁决 | 写入围栏在词法前缀之外补一次**父目录 `realpath`** 裁决，堵住「中间目录或末级是 symlink 指向围栏外」的绕过；读取不加此限制 |
 | 换行符保真 | 编辑 CRLF 文件不会把它改写成 LF |
@@ -58,12 +58,121 @@
 
 详见 [architecture.md](./architecture.md) 的「接管 ctx.fs」。
 
+### 写入的两道围栏是两件事
+
+| 围栏 | 回答的问题 | 拒绝时的码 |
+| --- | --- | --- |
+| 沙箱模式 | 「这个会话允许写吗」——`read-only` / `workspace-write` / `danger-full-access` | `FS_SANDBOX_DENIED`（宿主会改写成 `[sandbox: …]` 标记 + 升权提示） |
+| 挂载根 | 「这个目录被服务吗」——目标是否在某个已挂载 `ssh://` 根之下 | `FS_OUTSIDE_WORKSPACE`（原文直达模型） |
+
+**为什么要在远端重做模式判定**：本机沙箱的实现是 `SandboxedFileSystem.checkedTarget`，一个原型方法；
+插件用同名自有属性接管了 `writeText` / `editText`，远端分支根本不调用它。所以不加这一步，`read-only`
+会话照样能改远端文件，且全程无任何提示——模型的系统提示还明确要求它「不要仅凭策略就拒绝，先试」，
+于是它试成功了，从模型视角看完全合规。
+
+**工作区内的修改算不算数？** 算。`workspace-write` 要求目标落在**会话自己的**工作区之内，
+与本地同一条规则（本地是 `writableRoots(policy)`，第一项为 `policy.workspaceRoot`）。
+这个 root 不是「本机上的路径」——实测 `SandboxPolicyService.resolve({ session })` 返回的是
+`session.header.cwd` 原样，远端会话拿到的就是 `ssh://qiyk/home/dev/proj` 这种拼写，可以直接
+比较。此前文档说「不比较，因为那是本机路径」，是**错的**；不比较的后果是一个会话能写同一
+主机上的兄弟根、甚至另一台主机上的已挂载根，而本地会话做不到这些。
+
+| 目标 | `workspace-write` 的结果 |
+| --- | --- |
+| 会话工作区内 | 允许 |
+| 同一主机的兄弟目录（即使已挂载） | 拒绝，`FS_SANDBOX_DENIED`，文案点名会话工作区 |
+| 另一台主机的已挂载根 | 拒绝，文案点名两个主机 |
+| 未挂载路径 | 拒绝，`FS_OUTSIDE_WORKSPACE`（挂载围栏，另一道） |
+
+**命令则不然**：`workspace-write` 下远端命令仍以远端登录用户权限运行，无法收窄到工作区——
+限制**进程**需要内核边界，而它跨不过 SSH。文件写入被收窄，命令没有被收窄，这个差别是
+如实的，不是遗漏。
+
+**一条隐含依赖，必须知道**：上面说的「会话 root 可以直接比较」依赖 `fs-shim.js` 对
+`node:path.isAbsolute` 的补丁（让 `ssh://…` 读作绝对路径）。`SandboxPolicyService.resolve`
+会对 `session.header.cwd` 调用它，缺了这个补丁就会抛
+`workspace root must be an absolute execution-world path`，于是**每个远端会话**的策略解析
+都失败。插件对这种失败的做法是 fail-closed（拒绝），但拒绝文案会明确说这是**接线问题**、
+切换模式无用，并引述底层错误——不会谎称你选了「仅可查看」。这条依赖的脆弱性已实测确认：
+裸 `node:path` 下 `isAbsolute('ssh://qiyk/home/qiyk/test')` 为 `false`，打上补丁后为 `true`。
+
+`node:fs` 桥接（`fs-shim.js`）**不看模式**，这是刻意的：它服务的是宿主自己的记账调用
+（新建会话 cwd 的 `mkdir`、注册表的 `stat`/`realpath`、变更追踪的快照拷贝），本地同一批调用同样不受
+`ctx.fs` 沙箱约束。而且它只看得到部署默认模式、看不到会话级覆盖，按它判定会得出错误结论。
+模型面向的写路径走 `ctx.fs` 与插件自己的工具，那条路上模式是生效的。插件自己的工具不经 `ctx.fs`，
+所以它们**各自解析** `ctx.sandboxPolicy.resolve({ session })`：`ssh_workspace_transfer` 的上传
+（写入远端）在 `read-only` 下被拒，下载（只读远端）照常可用；上传还遵守与 `write` / `edit`
+**同一份**工作区范围判定（`workspaceWriteScopeRefusal`），所以两条写路径不会分叉。策略服务
+缺席＝不受限，但**策略解析失败按 `read-only` 处理**——拒绝一次可重试的上传，好过在「仅可查看」
+会话里静默写入；文案会区分这两种情况。
+
+### 命令执行是另一条独立的写路径
+
+只堵文件写入是不够的。插件有**六条**改远端的路，它们不共享调用链：
+
+| 表面 | 到达远端的方式 | 模式的判定位置 |
+| --- | --- | --- |
+| `write` / `edit` | `ctx.fs` 路由 | `remote-fs.js`（每次调用带 policy） |
+| `ssh_workspace_transfer` | SFTP 暂存 + 原子改名 | 工具自己解析 policy |
+| `ssh_workspace_exec` | `engine.exec` | `mode-gate.js` |
+| `ssh_workspace_shell` | PTY 通道 | `mode-gate.js` |
+| `bash` / `pwsh`（workdir 为 `ssh://`） | `ctx.shell` → `patch-shell.js` | 读 spec 上的 `sandboxPolicy` |
+| `terminal_open` / `terminal_send`（cwd 为 `ssh://`） | `ctx.subprocess.spawnTerminal` | `patch-terminal.js`：开 PTY 时拒绝，且**每次写入**重新判定 |
+
+这六条读的是**同一个** `sandboxPolicy.mode`，但共用代码的程度不同：后四条（`exec` / 持久 shell /
+`bash`、`pwsh` / 终端）共用 `lib/mode-gate.js` 的判定与拒绝文案；`ssh_workspace_transfer` 从同一模块
+取 `sessionPolicyOf` 与范围判定；`write` / `edit` 在自己的路由里判定模式（`FS_SANDBOX_DENIED` 由宿主
+改写成 `[sandbox: …]`，与本地一致），只把 `workspace-write` 的范围判定交给 `mode-gate.js`。
+分歧的风险因此落在「模式取自哪里」——六条的主判据都是会话级策略（`write` / `edit` 用宿主传入的
+`sandboxPolicy`，其余五条自己 `resolve({ session })`）；只有 `write` / `edit` 在策略缺席时回落到
+部署默认，那是无 agent 的调用，本地后端对同样的调用也用部署默认。
+
+这不是预防性设计：曾有一个 `read-only` 会话执行
+`ssh_workspace_exec { command: "rm /home/qiyk/test/test.py" }` 并拿到 `[exit code: 0]`，而同会话的
+`write` 是会被拒的。
+
+**为什么是「拒绝」而不是「过滤」**：本机沙箱回答「这条命令能不能写」的方式，是把**进程**用内核边界
+（bwrap / seatbelt / 受限 ACL 令牌）限制在工作区根内。这些机制一个也跨不过 SSH——远端命令以远端登录
+用户的完整权限运行。没有哪个 seam 能接收一个 `workspaceRoot`，而用文本匹配去猜一条命令是否会写也不是
+边界：`sh -c 'rm -rf ~'`、`find -delete`、`python -c ...` 读起来都像纯文本。
+
+所以只有两个选项：允许任意远端命令、让模式成为一句空话；或者拒绝、让模式说真话。插件选后者，并在
+拒绝文案里写明原因与出路（切到 `workspace-write` / `danger-full-access`），因为一条模型没预料到的拒绝
+会被当成 bug 反复重试。
+
+**读不受影响**：`read` / `glob` / `grep` / `ops_*` 走 SFTP，不需要执行命令。代价是失去任意命令执行
+（远端 `git status`、构建），这需要用户显式切换模式来解锁。
+
+**终端为什么有两道判定**：`ctx.subprocess.spawnTerminal` 的 spec 里没有 owner（只有 `cwd` / `argv` /
+`env`），所以门禁不能装在那里；而它也不是单一入口——宿主有**两条**路会走到它：
+
+| 路径 | 经过 |
+| --- | --- |
+| `terminal_open` / `terminal_send` | `ctx.terminals.spawn` → `dsh-terminal-bash` → `spawnTerminal` |
+| 侧边栏的内建终端（`dsh-api-terminal-controller`） | **直接**调用 `spawnTerminal`，完全不经过 `ctx.terminals` |
+
+因此把门禁装在 `ctx.terminals` 上会漏掉第二条——而只测工具路径的用例仍会通过。门禁装在
+`patch-terminal.js` 的路由里（两条路唯一的汇合点），会话身份取自 `spec.env.DSH_SESSION_ID`
+（两个调用方都会写它），再用 `ctx.get('agents').get(id)` 换成 session。
+
+判定分**两半**，因为只拒「打开」只能保护本来就处于 `read-only` 的会话：
+
+- 开 PTY 时拒绝，且**没有任何通道被打开**；
+- handle 的每次 `write` 重新读一次模式——在 `workspace-write` 下开的 shell 被切成 `read-only` 后
+  立刻停止接受命令。这是实际更常见的顺序：先开终端干活，再收窄模式。
+
+控制字节是例外：SIGINT（`\x03`）与关闭路径必须继续可用，否则「仅可查看」会变成「连你已经启动的
+命令都停不掉」。
+
+`node:fs` 桥接（`fs-shim.js`）同样**不看模式**，原因见上：它服务宿主自己的记账调用，本地同一批调用也不受
+`ctx.fs` 沙箱约束，而且它看不到会话级覆盖。
+
 ## 三、远端执行
 
 | 功能 | 说明 |
 | --- | --- |
 | `pwsh` / `bash` 远端化 | 会话工作区是 `ssh://` 时，这两个工具的命令**在远端以 POSIX shell 语义执行**；一次性命令、后台任务、超时与中止都按 DSH 的进程契约工作；本地 `workdir` 的命令仍在本机沙箱内 |
-| 无沙箱约束 | 远端命令以远端登录用户的**完整权限**运行，不受本机文件沙箱限制 |
+| 无沙箱约束 | 远端命令以远端登录用户的**完整权限**运行，不受本机文件沙箱限制——正因如此，`read-only` 会话的命令执行由插件**直接拒绝**（见上节「命令执行是另一条独立的写路径」），而不是尝试围栏 |
 | `ssh_workspace_exec` | 不依赖挂载即可在远端跑命令（主机巡检、挂载根之外的路径、装机脚本），支持 `run_in_background` 与 `timeoutMs` |
 | `ssh_workspace_shell` | **持久**远端 shell：`cd`、导出的变量、后台任务跨调用保留，像一直开着的一个终端；可按名字并存多个会话；PTY 通道，退出码由命令行末尾的标记行取回 |
 | glob / grep 远端化 | 调用**远端主机上的 ripgrep**，返回真实远端路径；`rg` 缺失时以退出码 **127** + 安装提示失败 |

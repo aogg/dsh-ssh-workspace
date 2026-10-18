@@ -203,7 +203,15 @@ redirect URI），需要一并放行 localhost。
 ## 通用约定
 
 - 路径一律使用 `ssh://` 实际拼写（不含显示用的 `@`）；
-- 错误语义与 `ctx.fs` 同一套（`FS_*` 码），写入围栏对工具触发的写同样生效；
+- 错误语义与 `ctx.fs` 同一套（`FS_*` 码，另加远端专用的 `FS_OUTSIDE_WORKSPACE`），
+  写入围栏对工具触发的写同样生效；`read-only` 会话会拒绝远端 `write` / `edit`
+  （`FS_SANDBOX_DENIED`），`ssh_workspace_transfer` 的**上传同样是写入**，也受该模式约束
+  （工具自己从会话解析 `sandboxPolicy`，因为它不经 `ctx.fs`）；下载只读远端、写本机，
+  因此在 `read-only` 下照常可用；
+- **命令执行同样受模式约束**：`ssh_workspace_exec`、`ssh_workspace_shell` 在 `read-only`
+  下直接拒绝（返回 `success: false` / `ok: false`，文案自述原因与出路），因为本机沙箱跨不过
+  SSH，没有可用的围栏手段。`ssh_workspace_shell` 的 `close: true` 不受限——关闭不改变远端任何东西。
+  这三处与 `write` / `edit` / 上传共用 `lib/mode-gate.js` 的判定，不会各自漂移；
 - glob / grep 在远端工作区调用**远端主机的 ripgrep**（需远端已安装 `rg`，
   缺失时命令以退出码 127 失败并附安装提示）；工作区变更追踪用**远端 git**
   （未安装时该功能自动降级，不阻断会话）。本地工作区不受影响。

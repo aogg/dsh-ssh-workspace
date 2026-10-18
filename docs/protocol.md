@@ -28,13 +28,30 @@ ssh://<主机别名>/<远端绝对路径>
 
 `isRemotePathUnder(parent, child)` 在规范化后做词法前缀比较（根 `/` 特判）。
 远端**写入**（writeText / editText / mkdir / 原子替换）只允许落在已挂载的
-远端工作区之内，越界返回 `FS_SANDBOX_DENIED`；**读取不受限**。
+远端工作区之内，越界返回 `FS_OUTSIDE_WORKSPACE`；**读取不受限**。
 
-这道围栏之外还有一道**独立的**围栏：被停用（`detach`）的工作区，其下**读写都拒**，
-同样返回 `FS_SANDBOX_DENIED`，文案带 `the remote workspace is detached`。
-两者判定时机不同——写入围栏问「这个路径在不在某个已挂载根之下」，
-停用围栏问「这个路径在不在某个被主动停用的根之下」，后者先于前者作答，
-且对 `ssh_workspace_exec` / 持久 shell / glob / grep / git / 传输一并生效
+这道围栏之外还有两道**独立的**围栏：
+
+1. **沙箱模式**（`read-only` / `workspace-write` / `danger-full-access`）。`read-only` 拒绝一切远端写入，
+   返回 `FS_SANDBOX_DENIED`——与本地同一套语义。模式由每次调用的 `sandboxPolicy`（第五个参数）带入；
+   缺席时回落到后端 `sandboxMode`（部署默认），而不是「不限制」。
+   `workspace-write` **比较会话自己的 workspace root**：本地后端用 `writableRoots(policy)` 判定，第一项
+   就是 `policy.workspaceRoot`，远端给出同样的答案。这个 root 由 `SandboxPolicyService.resolve` 返回
+   `session.header.cwd` 原样得到——远端会话就是那个 `ssh://` 拼写，可以直接比较（实测确认，见
+   `docs/features.md` 的「工作区内的修改算不算数」）。落在会话工作区外的目标是
+   `FS_SANDBOX_DENIED`，文案点名会话工作区与出路。挂载围栏是另一道：它问的是「这个目录被服务吗」。
+   **命令执行面**（`ssh_workspace_exec` / 持久 shell / workdir 为 `ssh://` 的 bash、pwsh / cwd 为
+   `ssh://` 的终端）另走 `lib/mode-gate.js`：`read-only` 下直接拒绝，不做围栏尝试——本机内核边界跨不过
+   SSH，没有可交给它的 `workspaceRoot`。终端的判定分两处时机：开 PTY 时拒绝（不建通道），以及此后
+   **每次写入**重新判定（已开着的终端在切成 `read-only` 后停止接受命令，控制字节与关闭除外）。
+   `workspace-write` 下命令**不会**被收窄到会话工作区：限制一个**进程**需要内核边界，而它跨不过 SSH。
+   这是如实的限制，不是遗漏——文件写入被收窄，命令没有被收窄。
+2. **工作区停用**（`detach`）。其下**读写都拒**，返回 `FS_PERMISSION_DENIED`，文案带
+   `the remote workspace is detached`。用权限码而非沙箱码，是因为宿主的工具层会把每个
+   `FS_SANDBOX_DENIED` 改写成「在 <mode> 模式下被拒 + 可升权重试」，而对一个被关掉的工作区升权毫无作用。
+
+三者判定时机不同——停用最先作答，随后是模式，最后是挂载根；且停用对
+`ssh_workspace_exec` / 持久 shell / glob / grep / git / 传输一并生效
 （判据是 `engine.isDisabledTarget`）。详见 [unmount-modes.md](./unmount-modes.md)。
 
 ## 显示规则
