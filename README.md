@@ -154,8 +154,9 @@ DSH 的所有文件操作都走 `ctx.fs`（`@deepseek-ai/dsh-fs`）这一个服�
 | --- | --- |
 | `ssh_workspace_hosts` | 列出可用主机（store + `~/.ssh/config` 候选） |
 | `ssh_workspace_mount` | 把一个远端目录登记为工作区，返回 `ssh://` 路径 |
-| `ssh_workspace_unmount` | 注销远端工作区 |
-| `ssh_workspace_status` | 当前挂载点、连接、转发与持久会话状态 |
+| `ssh_workspace_unmount` | 停用远端工作区（保留记录与会话，会话归档，可逆） |
+| `ssh_workspace_enable` | 重新挂载被停用的工作区并取消归档其会话 |
+| `ssh_workspace_status` | 当前挂载 / 停用列表、连接、转发与持久会话状态 |
 | `ssh_workspace_exec` | **在远端**执行 shell 命令（可 `run_in_background`） |
 | `ssh_workspace_shell` | 在**持久**远端 shell 里执行命令，状态跨调用保留 |
 | `ssh_workspace_transfer` | 本机 ↔ 远端传文件（SFTP，不经对话内容） |
@@ -249,7 +250,7 @@ exec 通道；空闲 30 分钟回收（有操作在飞的连接不回收）。
 | [architecture.md](./docs/architecture.md) | 架构与实现：`ctx.fs` / `ctx.shell` / `ctx.subprocess` 接管、变更监视与流式读取、内建桥接、引擎与连接模型 |
 | [protocol.md](./docs/protocol.md) | `ssh://` 路径协议：语法、规范化、显示规则、`file:` URI |
 | [hosts.md](./docs/hosts.md) | 主机配置与认证：存储格式、`~/.ssh/config` 回退、面板管理 |
-| [tools.md](./docs/tools.md) | Agent 工具参考：九个 `ssh_workspace_*` 工具 |
+| [tools.md](./docs/tools.md) | Agent 工具参考：十个 `ssh_workspace_*` 工具 |
 | [ui.md](./docs/ui.md) | 界面指南：面板、添加工作区双入口、远程工作区标记 |
 | [development.md](./docs/development.md) | 开发、调试与发布：源码结构、依赖解析、打包流程 |
 | [troubleshooting.md](./docs/troubleshooting.md) | 排查与常见问题：错误语义、连接问题、已知限制 |

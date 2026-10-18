@@ -1,6 +1,6 @@
 # Agent 工具参考
 
-> 定位：五个 `ssh_workspace_*` 工具的用途、参数与返回。
+> 定位：十个 `ssh_workspace_*` 工具的用途、参数与返回。
 
 这些工具都不复制文件能力：文件内容由 `ctx.fs`（SFTP）服务，`read` / `write` /
 `edit` 已经能在远端工作区工作；会话工作区为 `ssh://` 时，pwsh / bash 工具的
@@ -38,22 +38,53 @@
 
 ## ssh_workspace_unmount
 
-停止服务一个已挂载的远端目录，并在登记过时删除工作区记录
-（活动中的会话保留自己持有的路径副本）。
+停用一个已挂载的远端目录。**默认不删除任何东西**：工作区记录保留（侧边栏那一行
+仍在，置灰），会话被**归档**（从会话列表隐藏，但文件与记账位置都保留，可取消归档）。
+
+停用后该工作区内的**所有操作都被拒绝**——读文件、列目录、写、变更监视、执行命令、
+开终端、跑 glob / grep / git、传输文件；SSH 连接本身保留（主机面板、
+不带 cwd 的 `ssh_workspace_exec`、端口转发都照常可用）。
 
 | 参数 | 必填 | 说明 |
 | --- | --- | --- |
 | `workspacePath` | 是 | `ssh_workspace_mount` 返回的 `ssh://` 路径 |
-| `deregister` | 否 | 是否同时删除持久工作区记录（默认 `true`） |
+| `mode` | 否 | `detach`（默认，保留工作区记录）或 `deregister`（同时删除记录） |
+| `archiveSessions` | 否 | 是否归档会话（默认 `true`）；归档可逆 |
 
-返回 `ok`、`wasMounted`、`deregistered`、`error`。
+返回 `ok`、`mode`、`wasMounted`、`deregistered`、`archived[]`（成功归档的会话 id）、
+`archiveFailed[{ sessionId, error }]`、`error`。
+
+**归档是逐个进行的，失败不中断**：有正在跑回合 / 子智能体 / 后台任务的会话会被
+registry 拒绝（这是它的文档化行为，本工具不传 `stopActivity`，因为卸载工作区不等于
+要求中止正在进行的对话）。被拒的会话留在列表里，并逐条出现在 `archiveFailed`。
+
+> 本工具**没有**「删除会话」选项。DSH 没有公开的会话删除 API，绕过服务层直接
+> unlink 会话日志会留下孤儿数据，所以归档是这里能给出的最强且可恢复的语义。
+
+## ssh_workspace_enable
+
+把一个被停用的工作区重新挂载，并取消归档它的会话。这是 `detach` 的逆操作。
+
+| 参数 | 必填 | 说明 |
+| --- | --- | --- |
+| `workspacePath` | 是 | 之前停用的 `ssh://` 路径 |
+| `unarchiveSessions` | 否 | 是否取消归档会话（默认 `true`） |
+
+返回 `ok`、`workspacePath`、`registered`、`unarchived[]`、
+`unarchiveFailed[{ sessionId, error }]`、`error`。
+
+启用前会先 `stat` 验证远端目录仍然存在——否则会得到一个「看起来在服务、实际
+ENOENT」的工作区。工作区记录若已被 `deregister` 模式删掉，会重新
+`createCanonical` 建一条。
 
 ## ssh_workspace_status
 
-无参数。返回当前挂载点 `mounted[]`、活动连接
+无参数。返回当前挂载点 `mounted[]`、**已停用**的工作区 `disabled[]`、活动连接
 `connections[{ alias, state, inFlight }]`（`state` 为 `connected` / `broken`）、
 打开中的端口转发 `forwards[]`、持久会话 `shells[{ alias, session, alive }]`，
 以及 `fsPatched`（远端服务是否在役）。
+
+`mounted` 与 `disabled` 是互斥的两个集合：停用会把路径从前者移到后者。
 
 ## ssh_workspace_exec
 
@@ -76,6 +107,9 @@
 `truncated`、`durationMs`、`error`；后台模式下额外返回 `jobId`，用
 `job_output` / `job_kill` 收集与终止。部署没有 `ctx.jobs`（或该 owner 无控制器）
 时自动内联执行，不会返回无人能读的 id。
+
+**`cwd` 落在已停用的工作区内时调用被拒绝**；不带 `cwd`（登录目录）或 cwd 在工作区
+之外照常执行——这正是「停用工作区但保留 SSH 连接」的含义。
 
 ## ssh_workspace_shell
 
@@ -158,8 +192,11 @@ redirect URI），需要一并放行 localhost。
   （未安装时该功能自动降级，不阻断会话）。本地工作区不受影响。
 - 挂载时探测 `rg` / `git` / `inotifywait`，缺失项在挂载结果与面板里直接提示；
   远端有 `inotifywait` 时变更监视走事件推送，否则回落到轮询。
+- **已停用的工作区**对所有读写 / 命令 / 传输一律拒绝，错误信息会点名
+  "the remote workspace is detached"；详见 [unmount-modes.md](./unmount-modes.md)。
 
 ## 相关
 
 - [protocol.md](./protocol.md)
+- [unmount-modes.md](./unmount-modes.md)
 - [根 README](../README.md)

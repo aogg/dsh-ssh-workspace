@@ -45,6 +45,7 @@ const SUITES = [
   'tree-transfer',
   'insert-once',
   'locale-register',
+  'detach',
   'lifecycle',
   'phase6',
   'store-lock',

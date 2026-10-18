@@ -41,6 +41,7 @@ const EXPECTED_TOOLS = [
   'ssh_workspace_hosts',
   'ssh_workspace_mount',
   'ssh_workspace_unmount',
+  'ssh_workspace_enable',
   'ssh_workspace_status',
   'ssh_workspace_exec',
   'ssh_workspace_transfer',
@@ -50,9 +51,10 @@ const EXPECTED_TOOLS = [
 ]
 // Route paths the browser half must expose. Kept in step with ROUTES in
 // lib/routes.js: hosts, host save/delete/forget-key/disconnect, test, ls,
-// status, mount, unmount, forward, unforward, the six saved-forward routes
-// (save/toggle/delete/remember/probe/settings), transfer, download, upload.
-const EXPECTED_ROUTES = 21
+// status, mount, unmount, enable, forward, unforward, the six saved-forward
+// routes (save/toggle/delete/remember/probe/settings), transfer, download,
+// upload.
+const EXPECTED_ROUTES = 22
 
 let failures = 0
 function check (label, ok, detail) {

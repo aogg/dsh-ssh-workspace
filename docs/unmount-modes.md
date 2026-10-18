@@ -1,272 +1,289 @@
-# 工作区卸载：保留、置灰与删除会话
+# 工作区卸载：停用、归档与重新启用
 
-> 状态：**方案，未实施**。端口转发部分已落地，卸载部分只落这份文档。
->
-> 本文覆盖需求 3 与 4：
-> - 需求 3：卸载时是否连带删除工作区记录与会话，做成开关
-> - 需求 4：卸载后对应记录置灰，并提供「启用」按钮
+> 状态：**已实施**（见 CHANGELOG 的 `[未发布]` 段落）。本文描述的 `detach` /
+> `enable` 两条路径、归档语义与全局停机围栏均已落地并通过测试。
+
+一句话定位：**「卸载」不删除任何东西——它让工作区停用（会话归档、读写执行全停），
+保留工作区记录，随时可以一键启用回来。**
 
 ---
 
 ## 一、结论先行
 
-| 子需求 | 可行性 | 依据 |
-| --- | --- | --- |
-| 卸载时只摘挂载、保留工作区记录 | ✅ **现在就能做** | 服务端已支持 `deregister: false`，只是 UI 写死为 `true` |
-| 卸载时删除工作区记录 | ✅ 已实现 | `registry.delete(entity.id)` |
-| 卸载时删除**会话** | ⚠️ **受限于宿主无公开 API** | 见 §四 |
-| 卸载后置灰 + 启用按钮 | ✅ 可行 | 需新增一份持久化的「已停用」清单，见 §五 |
-
-一句话：**需求的 3 和 4 里，只有「删除会话」是有硬阻塞的**，其余都是常规工程。而「置灰」有一个不明显的陷阱——它不能靠删除登记来实现，反而**必须保留登记**。
+| 问题 | 答案 |
+| --- | --- |
+| 卸载做了什么？ | 摘挂载 + 标记停用 + **归档**会话 |
+| 会话被删了吗？ | **没有**。归档只是从会话列表隐藏，文件与工作区记账位置都保留 |
+| 工作区记录还在吗？ | 默认在（`detach` 模式），所以侧边栏那一行仍然可见（置灰） |
+| 卸载后还能连上远程吗？ | SSH 连接保留（主机面板、`ssh_workspace_exec` 不带 cwd 仍可用）；**工作区内的读写、列目录、命令、终端、子进程、传输全部拒绝** |
+| 重启后会不会自己复活？ | 不会。停用清单持久化在 store 里，启动恢复循环会跳过 |
+| 用到了别的插件吗？ | 没有。归档走 DSH 原生 `workspaceRegistry.archiveSession()` |
 
 ---
 
-## 二、现状核实
+## 二、三种模式的语义
 
-### 卸载当前做了什么
+`POST /api/dsh-ssh-workspace/unmount` 与 `ssh_workspace_unmount` 工具共用同一套模式，
+但**工具只暴露前两种**（`forget` 是给旧调用方保留的 HTTP 模式，见下）：
 
-服务端（`lib/routes.js`，unmount 路由）：
+| 模式 | 摘挂载 | 停用标记 | 工作区记录 | 会话 | 可恢复 |
+| --- | --- | --- | --- | --- | --- |
+| `detach`（默认） | ✅ | ✅ | **保留** | 归档 | ✅ 一键启用 |
+| `deregister` | ✅ | ✅ | 删除 | 归档 | 会话可取消归档，记录需重新挂载 |
+| `forget` | ✅ | **清除** | 删除 | 归档 | 相当于旧版「彻底移除」 |
+
+默认是 `detach`，因为它是唯一「一次点击就能回来」的模式。请求体里的
+`deregister: true` 仍被识别为 `deregister` 模式，避免旧调用方静默降级。
+
+`forget` 必须**同时**清掉持久清单与运行时围栏。只清清单会留下一个「面板里没有这一行、
+但运行时仍拒绝一切操作」的工作区——而「启用」按钮正好长在 `forget` 清空的那份停用
+列表上，用户将无从恢复。这一条有回归测试（`routes-smoke`）。
+
+`archiveSessions: false` 可以跳过归档（用户只想暂时关掉工作区，不想动会话列表时）。
+
+---
+
+## 三、卸载时到底发生了什么
+
+### 1. 摘挂载 + 打停用标记
 
 ```js
-const wasMounted = router.removeRoot(workspacePath)   // ① 内存：从 served-root 移除
-if (deregister) {                                      // ② 持久：删登记
-  const entity = registry?.list?.().find(c => c.path === workspacePath)
-  if (entity !== undefined) await registry.delete(entity.id)
+// lib/routes.js unmount handler
+const wasMounted = router.disableRoot(workspacePath)
+engine.store.entryStore.disableWorkspace(workspacePath)
+```
+
+`disableRoot` 做两件事（`lib/remote-fs.js`）：
+
+- 从 `roots` 集合里删掉 → 不再受写围栏保护
+- 加入 `engine.disabledWorkspaces` → 进入**全操作停用围栏**
+
+顺序是刻意的：如果先打停用标记再摘根，两步之间会存在一个「既在服务又已停用」
+的窗口，围栏答案取决于检查顺序。`disableRoot` 一次做完，不留中间态。
+
+### 2. 归档会话
+
+```js
+// lib/routes.js archiveWorkspaceSessions
+for (const sessionId of entity.sessionIds ?? []) {
+  await registry.archiveSession(sessionId)
 }
 ```
 
-路由本身**已经支持** `deregister: false`：请求体里 `deregister !== false` 才执行 ②。也就是说「只卸载、不删登记」今天就能用。
+用的是 DSH 原生 `WorkspaceRegistry.archiveSession()`，语义（读自宿主实现）：
 
-真正的问题在 UI：面板把参数写死了。
+- 会话 id 进入 **registry 全局的 `archivedSessionIds`**，从所有会话分组界面消失
+- 会话文件**原封不动**
+- 工作区记账槽位（`sessionIds`）**不清理**，所以 `unarchiveSession` 能把会话放回原位
+- 同一笔写入里顺带清掉置顶（归档与置顶互斥）
+- 有正在跑的工作时默认**拒绝**并抛 `WorkspaceActiveSessionError`，`activity` 里写明
+  是 turn / subagent / job / schedule 哪一类
 
-```js
-// lib/client.js，handleUnmount
-body: JSON.stringify({ workspacePath, deregister: true })
-```
-
-所以用户点一次卸载，两件事同时发生，且无法选择。
-
-### 两个动作的性质完全不同
-
-| 动作 | 位置 | 生命周期 | 影响 |
-| --- | --- | --- | --- |
-| `removeRoot()` | `remote-fs.js` 的 `this.roots`（Set） | **进程内** | 该路径的写入被围栏拒绝 |
-| `registry.delete()` | DSH 的 workspace registry | **持久** | 侧边栏那行消失，重启不再恢复 |
-
-`removeRoot` 只是撤销「这个远端目录归我管」的写授权。它**不删远端文件、不断 SSH 连接**，读路径（`readText`/`stat`）也不受 roots 围栏约束——只有写受 `#assertWritable` 约束。这个区分对下面的设计是前提。
-
-### 会话文件没有丢，只是失去了归属
-
-在用户的磁盘上核对过 `ssh://qiyk/home/qiyk/test`：
-
-| 项目 | 数量 |
-| --- | --- |
-| `sessions/--ssh-qiyk-home-qiyk-test--/` 下的会话目录 | 10 |
-| `workspace.json` 里该工作区登记的 `sessionIds` | 3 |
-| 未被任何工作区登记的孤儿会话 | 7 |
-
-孤儿会话的 `session.v4.jsonl.zstd` 表头里 `cwd` 确实是该 `ssh://` 路径，内容完好。**它们是在工作区登记之前用该 cwd 开出来的会话**，登记发生时没被带上，之后一直是孤儿。
-
-这一点直接决定了删除会话的范围必须显式定义：只删会计内的会漏掉孤儿，连孤儿一起删则可能删掉别的用途遗留的数据。
-
----
-
-## 三、需求 3：「卸载并删除会话」的开关
-
-### 三态语义
-
-卸载对话框给三个选项，默认第一项：
-
-| 选项 | `deregister` | 删会话 | 可恢复性 |
-| --- | --- | --- | --- |
-| **仅卸载**（默认） | `false` | 否 | 重启后自动恢复，会话全在 |
-| **卸载并删除工作区记录** | `true` | 否 | 登记没了，会话文件仍在（成为孤儿） |
-| **卸载并删除工作区记录与会话** | `true` | 是 | **不可恢复**，需输入工作区标题确认 |
-
-第一项是真正安全的默认值：它对应上一轮回答里说的「用 `deregister: false` 即可保住登记与旧会话关联」。
-
-### 为什么第一项安全
-
-`index.js` 的启动恢复循环会遍历 registry，把所有 `ssh://` 项重新 `addRoot`：
+最后一条决定了实现细节：**逐个归档、失败不中断**。
 
 ```js
-for (const entity of registry.list()) {
-  const path = String(entity?.path ?? '')
-  if (!isRemotePath(path)) continue
-  activeRouter.addRoot(parts.alias, parts.remotePath)
+} catch (error) {
+  failed.push({ sessionId, error: ... })
 }
 ```
 
-`deregister: false` 保住了登记，于是重启后自动「复活」，连同 `sessionIds` 里的会话关联一起回来。代价是「列出但不可用」的中间状态：侧边栏还看得见，但文件打不开（写被围栏挡住）。这个中间状态正是需求 4 要处理的。
+一个正在跑回合的会话被拒绝，不应该让整批归档失败。路由把成功的放进 `archived`，
+失败的放进 `archiveFailed` 并逐条带原因，面板会把失败数量单独提示。
 
-### 硬阻塞：DSH 没有删除会话的公开 API
+**为什么不传 `stopActivity: true`**：那会强停用户正在跑的回合。卸载工作区不等于
+要求中止正在进行的对话，所以这里保守——拒绝、报告、让用户自己决定。
 
-逐个查过宿主包：
+### 3. 可选地删除工作区记录
 
-| 包 | 提供的方法 | 有无删除 |
-| --- | --- | --- |
-| `dsh-session-persistence` | `create` / `open` / `stat` / `list` / `flush` | **无** |
-| `dsh-workspace` | `delete(id)` | 有，但文档明写「retaining its directory and every session log」 |
-
-全 asar 搜 `deleteSession` / `session/delete`，只命中 `dsh-experimental-inspector` 的 devtools chunk 和 `session-query-sqlite` 的内部缓存裁剪——都不是公开 API。
-
-**结论：想删会话，只能绕过服务层直接动磁盘。**
-
-### 一次完整删除要清 5 处
-
-漏任何一处都会留下脏数据：
-
-| 位置 | 内容 |
-| --- | --- |
-| `<DSH_HOME>/sessions/<project>/<sessionId>/` | `session.v4.jsonl.zstd` |
-| `storages/session_projcache/sessions/<sessionId>.json` | 投影缓存 |
-| `workspace.json` 的 `global.archivedSessionIds` / `pinnedSessionIds` | 归档与置顶集合 |
-| 工作区实体的 `sessionIds` | 会计关系 |
-| session-manager 的标注 / 归档账本 | 若装了该插件 |
-
-此外还必须先确认会话**没有在跑**——运行中的 live writer 持有租约，强删会损坏正在写的日志。
-
-### 两条路线
-
-#### 路线 A（推荐）：委托给已安装的 `dsh-session-manager`
-
-用户 profile 里有 `dsh-session-manager@0.7.1`，它已经把这套活干完了。读过它的实现顺序：
-
-```
-POST /session-manager/api/delete  { sessionId }
-  1. 发现并递归删除子智能体会话
-  2. 身份与目录校验（防路径穿越、防符号链接）
-  3. 停止仍活着的会话
-  4. 先删子、后删父
-  5. detachFromWorkspaces + unarchiveSession
-  6. rm -rf 会话目录
-  7. 清标注与归档账本
-  8. 写投影缓存
+```js
+if (mode === 'deregister' || mode === 'forget') {
+  await registry.delete(entity.id)
+}
 ```
 
-自己在插件里重写一遍等于重造这个轮子，还会漏掉它已经踩过的坑。
-
-**探测方式**：`ctx.get('sessionManager')` 不一定存在（它是 HTTP 插件，未必 provide 服务），所以要走 HTTP 内部调用，或退化为「检测包是否安装」再请求自身 webServer。
-
-#### 路线 B（保底）：自己做，但只做安全子集
-
-如果 session-manager 不在：**直接拒绝「删除会话」选项**，并明确告知「需要安装 dsh-session-manager，或先用它删除会话」。
-
-绝不半删。半删会留下「登记已删、文件还在」的孤儿——用户的磁盘上已经有 7 个这种孤儿了，不该再制造。
-
-### 会话范围必须显式定义
-
-- **会计内**：`entity.sessionIds`（该工作区登记了 3 个）
-- **孤儿**：header `cwd` 等于该路径但未被会计的（同一台机器上还有 7 个）
-
-建议默认只删会计内的；孤儿单独给一个「同时清理 N 个未归属会话」的勾选项。孤儿可能是别的用途遗留的，静默删掉是灾难。
-
-### 事务化
-
-删除是不可恢复操作，必须先在只读阶段把所有校验跑完（会话存在、未被占用、路径在预期根内），再进入执行阶段。任何前置校验失败就整体拒绝，不进入部分删除。
+`registry.delete()` 的文档明确写着 **"retaining its directory and every session log"**，
+所以它只删登记，不碰会话文件。这也是为什么本插件**没有**「删除会话」这个选项：
+DSH 没有公开的会话删除 API，绕过服务层直接 unlink 会话日志会留下孤儿数据
+（用户的磁盘上已经有 7 个这种孤儿了）。
 
 ---
 
-## 四、需求 4：卸载后置灰 + 启用
+## 四、停用围栏：除 SSH 连接外全部不可用
 
-### 关键发现：置灰不能靠删除登记
+### 为什么不能只挡住写
 
-直觉做法是「删掉登记，再在 UI 里把它画成灰的」。这不成立——**登记删掉后，DSH 侧边栏那行就消失了**，灰行无处安放。
+停用状态用一个集合表示（`engine.disabledWorkspaces`），任何**位于其中的路径**
+都被拒绝。这里区分三种"不可用"：
 
-所以必须反过来：**保留 registry 登记，只 `removeRoot`**（即 `deregister: false`）。DSH 照常渲染那行，我们再通过已有的 DOM 装饰机制把它改成灰的。
+```
+路径在 stopped workspace 内  →  全部拒绝（读、写、列目录、监视、命令、传输）
+路径在已挂载 workspace 内    →  允许（写还额外受 mounted-root 围栏）
+路径不在任何 workspace 内    →  保持历史行为（可读，写在围栏外被拒）
+```
 
-### 但这会引入一个新 bug
+第三种是刻意保留的：挂载之前用 `ssh_workspace_exec` 探查远程目录是插件的核心
+工作流，把它也封掉会让「先看看再挂载」变成不可能。停用标记与这个场景是两回事。
 
-`index.js` 的启动恢复循环会把 registry 里**所有** `ssh://` 项重新 `addRoot`。于是：
+### 检查点（全部在连接之前）
 
-> 用户点「卸载」→ 重启 → 工作区**自己又活了**。
+| 层面 | 位置 | 覆盖 |
+| --- | --- | --- |
+| `ctx.fs` | `remote-fs.js` `#assertEnabled` | `stat` / `lstat` / `readText` / `streamText` / `readBytes` / `readByteRange` / `listDir` / `watch` / `writeText` / `editText` |
+| 内建 fs 桥 | `fs-shim.js` `assertNotDetached` | `readdir` / `open` / `mkdir` / `rm` / `copyFile` 目标 |
+| shell | `patch-shell.js` | 任何 `ssh://` workdir |
+| subprocess | `patch-subprocess.js` | glob / grep / git |
+| terminal | `patch-terminal.js` | `spawnTerminal` |
+| HTTP | `routes.js` | `transfer` / `download` / `upload` |
+| 工具 | `tools.js` | `ssh_workspace_transfer`、`ssh_workspace_exec` 的 cwd |
 
-这正好是需求 4 要避免的。所以需要一个**持久化的「已停用」清单**：
+`streamText` 与 `watch` 返回 Promise，所以拒绝走 `Promise.reject` 而不是同步抛出，
+与 `fs-local` 的行为一致。
+
+### 为什么 `stat`/`lstat`/`realpath` 在桥里不挡
+
+这三条在 `fs-shim` 里是**故意放行**的，理由不是遗漏：
+
+DSH 的 workspace registry 用它们做**身份探针**——它对每个会话的 cwd 做 `realpath`
+和 `stat`，据此判断会话是否仍属于它的工作区。如果这里失败（而不是明确 miss），
+registry 会把会话从工作区记账里**剪掉**。
+
+> 卸载一个工作区，不应该顺手改写它的会话归属。
+
+所以桥里只挡**读内容**和**改东西**的操作，身份探针照常。`ctx.fs` 层的 `stat`
+仍然是拒绝的（那是内容访问的入口），两者面向的调用方不同。
+
+### 明确不拦的：SSH 连接本身
+
+- 主机面板：连接、测试、断开、`ls` 目录浏览
+- `ssh_workspace_exec` **不带 cwd** 或 cwd 在工作区之外
+- 端口转发（它绑定的是连接，不是工作区路径）
+
+这是"除 SSH 连接外"的字面实现：连接是资源，工作区是授权。
+
+---
+
+## 五、置灰与启用
+
+### 侧边栏置灰
+
+复用现成的 `passRemoteMarks()`（`lib/client.js`）——它本来就在遍历
+`[data-row-key^="workspace:"]` 做图标替换：
+
+```js
+const detached = remoteMarks.disabledIds.has(id) || remoteMarks.disabledTitles.has(title)
+if (detached) row.setAttribute('data-sshwsp-disabled', '1')
+else if (row.hasAttribute('data-sshwsp-disabled')) row.removeAttribute('data-sshwsp-disabled')
+```
+
+配套 CSS 只做视觉：
+
+```css
+[data-sshwsp-disabled="1"] { opacity: 0.5; }
+[data-sshwsp-disabled="1"]::after { content: "⏻"; ... }
+```
+
+**不拦点击**。拦截 DSH 自己的行点击处理器属于和宿主抢控制权，它一改版就崩。
+点击仍然会打开那个工作区，然后得到一个明确的「工作区已停用」错误——比一个
+神秘失效的按钮好。真正的入口是插件面板里的「启用」按钮。
+
+身份匹配需要 id 与标题两套集合，因为不同界面给的信息不同。这里有个容易踩的坑：
+`readLiveWorkspaces()` 会从 DSH 自己的 store 重新收集身份，而那个 store **不知道**
+本插件的停用清单。所以停用路径单独存在 `knownDisabledPaths` 里，每次重新收集时
+传回去，否则置灰会在下一次变更回调时消失。
+
+### 启用
+
+`POST /api/dsh-ssh-workspace/enable`（或 `ssh_workspace_enable`）：
+
+```
+1. 校验远端目录仍然存在（否则启用会得到一个「看起来在服务、实际 ENOENT」的工作区）
+2. router.addRoot()          → 重新挂载，顺带清掉停用标记
+3. store.enableWorkspace()   → 持久清单里删掉这一条
+4. registry 有同 path 的实体就复用，没有就 createCanonical
+5. 逐条 unarchiveSession()
+```
+
+第 5 步与归档对称：失败的逐条报告，不整体失败。
+
+---
+
+## 六、持久化
+
+停用清单写在**共享的** `$DSH_HOME/dsh-ssh.json` 的 `workspaces` 分区：
 
 ```jsonc
-"workspaces": {
-  "settings": { "deleteSessionsOnUnmount": false },
-  "disabled": ["ssh://qiyk/home/qiyk/test"]
+{
+  "version": 1,
+  "hosts": [...],
+  "knownHosts": {...},
+  "secrets": {...},
+  "forwards": { "settings": {...}, "items": [...] },
+  "workspaces": {
+    "disabled": ["ssh://qiyk/home/qiyk/test"]
+  }
 }
 ```
 
-恢复循环加一行跳过：
+几个约束：
+
+- **只接受 `ssh://` 路径**（`normalizeDisabledPath`）。本地路径进这个清单没有意义，
+  插件从不挂载本地目录，接受它只会让清单变成垃圾场。
+- **去重、幂等**。双击「卸载」不会写入两条。
+- **读坏了退化成空清单**。`workspacesOf()` 对任何脏数据返回 `{disabled: []}`——
+  最坏后果是重新挂载一个用户原本停用的工作区，而不是整个主机列表读不出来。
+- **沿用 `withFileLock`**。和其它分区一样走共享文件锁，两个 DSH 实例不会互相覆盖。
+
+启动时（`lib/index.js`）清单**在最前面**读入，不等 registry：
 
 ```js
-if (disabledSet.has(path)) continue
+detachedWorkspaces = engine.store.entryStore.workspaces().disabled
+engine.setDisabledWorkspaces(detachedWorkspaces)
 ```
 
-**这才是需求 4 真正需要新增的状态。** 灰行本身不需要新状态——`detached = registry.paths − mounted` 已经能算出来。
+放在 registry 注入里就太晚了——shell / subprocess / terminal 三条缝不等 registry，
+它们会在那之前就已经能跑命令了。之后 registry 注入时用同一份清单跳过重新挂载：
 
-### 置灰怎么画
-
-复用现成的 `passRemoteMarks()`（`lib/client.js`）：
-
-1. `/status` 增加 `disabled: string[]`
-2. MutationObserver 那一轮里，对命中 disabled 的 workspace 行打 `data-sshwsp-disabled="1"`
-3. CSS：`opacity: .45` + 行尾一个小标记「已断开」，`cursor` 保持可点
-
-**不要拦点击。** 拦截 DSH 的行点击属于和宿主抢控制权，宿主一改版就会崩。只做视觉，操作入口放在插件面板里。
-
-### 启用的完整动作
-
-```
-enableWorkspace(path):
-  1. 从 store.workspaces.disabled 移除该路径
-  2. router.addRoot(alias, remotePath)
-  3. registry 里若有同 path 的实体 → 复用；没有 → createCanonical
-  4. 可选：回填旧会话（默认关闭）
-  5. 刷新 /status 与置灰
+```js
+if (detachedSet.has(path)) continue
 ```
 
-第 4 步的代价：`attachSession` 会 `realpath` + `stat` 校验 header 的 `cwd`，并要求结果**逐字等于** `record.path`。**主机此刻不可达时必然失败**。所以默认关闭，做成「恢复历史会话」复选框，失败时逐条报错而不是整体失败。
-
-插入顺序也有坑：`attachSession` 总是 prepend，批量回填会把旧会话倒序插入，需要额外排序。
+没有这一行，用户点「卸载」→ 重启 → 工作区自己活了。
 
 ---
 
-## 五、风险清单
+## 七、测试
 
-| 风险 | 影响 | 处置 |
-| --- | --- | --- |
-| 删会话无官方 API | 只能落盘删除，易留脏数据 | 优先委托 session-manager；缺失则拒绝该选项 |
-| 半删 | 「登记已删、文件还在」的孤儿 | 事务化：先全量校验，再执行；校验失败整体拒绝 |
-| 重启自动复活 | 卸载形同虚设 | `workspaces.disabled` 持久标记 + 恢复循环跳过 |
-| 置灰拦截宿主行 | 宿主改版即崩 | 只做视觉，不拦点击 |
-| 主机不可达时回填会话 | `attachSession` 必然失败 | 默认关闭；逐条报错而非整体失败 |
-| 孤儿被静默删除 | 误删他处数据 | 孤儿单独勾选，默认不删 |
-| 「列出但不可用」的中间态 | 用户以为能用、实际写入被拒 | 置灰 + 「已断开」标记 + 面板「启用」按钮 |
-| 多进程并发写 store | 分区互相覆盖 | 沿用 `withFileLock`（store.js） |
+新套件 `tests/detach-smoke.mjs`（**62 项**）覆盖：
+
+| 分组 | 内容 |
+| --- | --- |
+| store 分区 | 新增/去重/删除/本地路径拒绝/脏数据退化/跨分区不互相覆盖 |
+| 包含判定 | 自身、子路径、前缀相似的兄弟目录、别的 alias、父目录、畸形条目 |
+| `ctx.fs` 围栏 | 10 个方法逐个断言被拒 + 错误信息点名"detached" |
+| 重新启用 | `enableRoot` 与 `addRoot` 都能清掉标记 |
+| 命令缝 | shell / terminal 被拒，且**没有任何连接被打开** |
+| 边界 | 工作区外的 cwd、别的 alias 必须照常可用 |
+| 自反性 | 启用 / 重新挂载**不得**经过围栏探测（见下） |
+
+最后一条记录了一个真实的实现陷阱：`ssh_workspace_mount` 与 `ssh_workspace_enable`
+都要先确认远端目录存在，最自然的写法是用 `engine.fs.stat()`——但 `engine.fs`
+**正是那层围栏**，它会拒绝停用工作区内的任何读取，于是「启用」在结构上永远失败。
+两处都改为走原始连接（`engine.withSftp`）直接 `stat`，与 HTTP 路由的做法一致。
+
+`routes-smoke` 增加 20 项（模式默认值、归档成功/失败上报、`deregister: true` 兼容、
+启用流程、两条新路由的回环围栏）。
+
+`boot-smoke` 在**真实主机**上验证了完整往返：挂载 → 卸载 → 状态里出现在 disabled →
+读被拒 → 启用 → 回到 mounted。
+
+全套：`node tests/run.mjs` **22/22** 通过（含用真实 DSH 框架跑的
+lifecycle / boot / tool-schemas，共 160 项 schema 断言）。
 
 ---
 
-## 六、实施顺序
+## 八、相关
 
-排在端口转发之后，因为「保留登记」的卸载模式是「删除会话」模式的前提；反过来做会先写出一个删登记的破坏性路径。
-
-| 批次 | 内容 | 验证 |
-| --- | --- | --- |
-| **1** | `store.js` 新增 `workspaces` 分区（`disabled` 列表 + `deleteSessionsOnUnmount`） | 新增 `workspace-prefs-smoke`：分区互不覆盖、并发写、脏 JSON 不覆盖他人分区 |
-| **2** | `index.js` 恢复循环跳过 disabled；`/status` 暴露 `disabled` | `lifecycle` 扩充：重启不复活 |
-| **3** | 三态卸载对话框；`deregister` 由选择决定 | 新增 `unmount-modes-smoke`：三种模式的请求参数、默认值、第三项需输入标题 |
-| **4** | 委托 session-manager 删会话；缺失时拒绝 | `unmount-modes-smoke` 扩充：缺 session-manager 时拒绝、孤儿不静默删 |
-| **5** | 置灰装饰 + 面板「启用」按钮 | `insert-once-smoke` 扩充：置灰装饰幂等、不重复挂监听 |
-
-批次 1–2 是纯后端，可独立验证；批次 3 才动 UI。
-
----
-
-## 七、与端口转发实现的一致性
-
-已落地的端口转发（`lib/forward-persist.js`）确立了一个模式，本方案沿用：
-
-| 概念 | 端口转发的做法 | 卸载的对应做法 |
-| --- | --- | --- |
-| 意图（用户想要什么） | `forwards.items[].enabled` | `workspaces.disabled` |
-| 事实（现在是什么状态） | `ForwardManager.list()` | `router.listRoots()` |
-| 二者分开存 | 是 | 是 |
-| UI 按**事实**标注按钮 | 「关闭」只在有 listener 时显示 | 「启用」只在未挂载时显示 |
-| 启动时按**意图**恢复 | `autoStart` 开关 | 恢复循环跳过 disabled |
-| 失败要留痕 | `failures` Map → 行内 `error` | 回填会话逐条报错 |
-
-核心原则相同：**按钮文案由事实决定，启动行为由意图决定。** 否则重启后连接还没建立、按钮却显示「关闭」，就是谎报。
+- [forward-persistence.md](./forward-persistence.md) — 端口转发的持久化，同一套
+  「意图 vs 事实」模式
+- [architecture.md](./architecture.md) — 各条缝的接管点
+- [tools.md](./tools.md) — `ssh_workspace_unmount` / `ssh_workspace_enable` 的参数

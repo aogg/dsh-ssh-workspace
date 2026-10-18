@@ -174,6 +174,7 @@ const expectedTools = [
   'ssh_workspace_hosts',
   'ssh_workspace_mount',
   'ssh_workspace_unmount',
+  'ssh_workspace_enable',
   'ssh_workspace_status',
   'ssh_workspace_exec',
   'ssh_workspace_transfer',
@@ -229,8 +230,36 @@ if (alias === undefined) {
   check('mounting a missing remote directory fails cleanly',
     badMount.ok === false && String(badMount.error).includes('no such directory'), JSON.stringify(badMount.error))
 
-  const unmountResult = await registry.registered.get('ssh_workspace_unmount').execute({ workspacePath: `ssh://${alias}${remoteDir}`, deregister: false }, {})
+  const unmountResult = await registry.registered.get('ssh_workspace_unmount').execute({ workspacePath: `ssh://${alias}${remoteDir}`, mode: 'detach' }, {})
   check('ssh_workspace_unmount removes the mount', unmountResult.ok === true && unmountResult.wasMounted === true, JSON.stringify(unmountResult))
+  check('detach reports the mode it ran', unmountResult.mode === 'detach', JSON.stringify(unmountResult.mode))
+
+  const statusDetached = await statusTool.execute({}, {})
+  check('a detached workspace moves out of the mounted list',
+    !statusDetached.mounted.includes(`ssh://${alias}${remoteDir}`), JSON.stringify(statusDetached.mounted))
+  check('a detached workspace appears in the disabled list',
+    statusDetached.disabled.includes(`ssh://${alias}${remoteDir}`), JSON.stringify(statusDetached.disabled))
+
+  // The fence must answer on the real host too: any operation inside a
+  // detached workspace is refused before a connection is even opened.
+  const detachedRead = await (async () => {
+    try {
+      await ctx.get('fs').readText({ targetKey: `ssh://${alias}${remoteDir}`, displayPath: `ssh://${alias}${remoteDir}` })
+      return 'succeeded'
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error)
+    }
+  })()
+  check('reading inside a detached workspace is refused', /detached/u.test(detachedRead), detachedRead)
+
+  const enableResult = await registry.registered.get('ssh_workspace_enable').execute({ workspacePath: `ssh://${alias}${remoteDir}` }, {})
+  check('ssh_workspace_enable mounts the workspace again',
+    enableResult.ok === true && enableResult.workspacePath === `ssh://${alias}${remoteDir}`, JSON.stringify(enableResult))
+  const statusReenabled = await statusTool.execute({}, {})
+  check('an enabled workspace is served again',
+    statusReenabled.mounted.includes(`ssh://${alias}${remoteDir}`), JSON.stringify(statusReenabled.mounted))
+  check('an enabled workspace leaves the disabled list',
+    !statusReenabled.disabled.includes(`ssh://${alias}${remoteDir}`), JSON.stringify(statusReenabled.disabled))
 
   const execResult = await execTool.execute({ alias, command: 'echo boot-test-ok' }, {})
   check('ssh_workspace_exec runs a command on the remote host',

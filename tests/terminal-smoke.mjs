@@ -73,6 +73,8 @@ function fakeChannel () {
 function fakeEngine () {
   const opens = []
   const engine = {
+    /** No workspace is detached in this suite. */
+    assertNotDisabled () {},
     async openChannel (alias, command, options) {
       const { channel, state } = fakeChannel()
       opens.push({ alias, command, options, state })

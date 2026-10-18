@@ -76,7 +76,7 @@ async function runExec (closeArgs, output) {
     broken: false,
     client: { exec: (_script, cb) => cb(undefined, fakeChannel(closeArgs, output)) },
   }
-  const engine = { acquire: async () => record, release: () => {}, forget: () => {} }
+  const engine = { acquire: async () => record, release: () => {}, forget: () => {}, assertNotDisabled () {} }
   const ctx = {
     get: (name) => (name === 'shell' ? { execute: async () => ({}) } : undefined),
     effect: (fn) => { fn() },

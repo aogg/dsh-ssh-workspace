@@ -166,8 +166,9 @@ become inaccessible since the host no longer exists.
 | --- | --- |
 | `ssh_workspace_hosts` | List available hosts (store + `~/.ssh/config` candidates) |
 | `ssh_workspace_mount` | Register a remote directory as a workspace and return an `ssh://` path |
-| `ssh_workspace_unmount` | Unregister a remote workspace |
-| `ssh_workspace_status` | Mount points, connections, forwards, and persistent sessions |
+| `ssh_workspace_unmount` | Detach a remote workspace (record and sessions kept, sessions archived — reversible) |
+| `ssh_workspace_enable` | Mount a detached workspace again and unarchive its sessions |
+| `ssh_workspace_status` | Mounted / detached lists, connections, forwards, and persistent sessions |
 | `ssh_workspace_exec` | Run a shell command **on the remote host** (optionally `run_in_background`) |
 | `ssh_workspace_shell` | Run a command in a **persistent** remote shell; state survives between calls |
 | `ssh_workspace_transfer` | Copy a file between this machine and the host (SFTP, bytes never enter the conversation) |
@@ -273,7 +274,7 @@ Explicitly **not supported**:
 | [architecture.md](./docs/architecture.md) | Architecture & implementation: the `ctx.fs` / `ctx.shell` / `ctx.subprocess` takeovers, change watching & streaming, built-in bridges, engine & connection model |
 | [protocol.md](./docs/protocol.md) | The `ssh://` path protocol: syntax, normalization, display rules, `file:` URIs |
 | [hosts.md](./docs/hosts.md) | Host configuration & auth: storage format, `~/.ssh/config` fallback, panel management |
-| [tools.md](./docs/tools.md) | Agent tool reference: the nine `ssh_workspace_*` tools |
+| [tools.md](./docs/tools.md) | Agent tool reference: the ten `ssh_workspace_*` tools |
 | [ui.md](./docs/ui.md) | UI guide: the panel, the dual "Add workspace" entry, remote-workspace marks |
 | [development.md](./docs/development.md) | Development, debugging & release: source layout, dependency resolution, packaging |
 | [troubleshooting.md](./docs/troubleshooting.md) | Troubleshooting & FAQ: error semantics, connection issues, known limitations |

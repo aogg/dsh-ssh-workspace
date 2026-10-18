@@ -412,7 +412,7 @@ function fakeUploadReq ({ url, host = 'localhost:4074', chunks, method = 'POST' 
       const { res, state } = fakeRes()
       const statusRoutes = makeRoutes({
         engine: { ...engine, pool: new Map() },
-        router: { listRoots: () => [] },
+        router: { listRoots: () => [], listDisabled: () => [] },
         forwards,
         savedForwards: saved,
         shells,
@@ -503,6 +503,173 @@ function fakeUploadReq ({ url, host = 'localhost:4074', chunks, method = 'POST' 
     }
 
     forwards.dispose()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+// --- detach / enable ------------------------------------------------------
+//
+// The unmount endpoint is where an irreversible-looking action happens, so the
+// mode default and the archive reporting are worth pinning: detach (the
+// default) must keep the workspace record, and a session that could not be
+// archived must be reported rather than silently dropped.
+{
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { HostConfigStore } = await import(pathToFileURL(path.join(pluginRoot, 'lib/store.js')).href)
+
+  const dir = mkdtempSync(path.join(tmpdir(), 'dsh-routes-detach-'))
+  try {
+    const store = new HostConfigStore(path.join(dir, 'dsh-ssh.json'))
+    const calls = { disabled: [], enabled: [], archived: [], unarchived: [], deleted: [] }
+    const record = { id: 'ws-1', path: 'ssh://alpha/home/dev/proj', title: 'proj', sessionIds: ['s1', 's2'] }
+    const registry = {
+      list: () => [record],
+      async archiveSession (id) {
+        calls.archived.push(id)
+        // A session with running work is refused by the registry; the route
+        // must still archive the others and report this one.
+        if (id === 's2') throw new Error('the session is active (turn)')
+      },
+      async unarchiveSession (id) { calls.unarchived.push(id) },
+      async delete (id) { calls.deleted.push(id) },
+      async createCanonical () { return record },
+    }
+    const fakeRouter = {
+      listRoots: () => [],
+      listDisabled: () => calls.disabled,
+      disableRoot (path) { calls.disabled.push(path); return true },
+      enableRoot (path) { calls.enabled.push(path); return true },
+      addRoot (alias, remotePath) { return `ssh://${alias}${remotePath}` },
+      assertEnabled () {},
+    }
+    // `engine.store.entryStore` is where the route persists the disabled list.
+    const routeEngine = {
+      ...engine,
+      pool: new Map(),
+      store: { entryStore: store },
+      assertNotDisabled () {},
+      async withSftp (_alias, fn) { return await fn({ stat: (_path, cb) => cb(undefined, { isDirectory: () => true }) }) },
+    }
+    const detachRoutes = makeRoutes({
+      engine: routeEngine, router: fakeRouter, forwards: { list: () => [], open: async () => ({}), close: () => false },
+      ctx: { get: (name) => (name === 'workspaceRegistry' ? registry : undefined) },
+    })
+    const findDetach = (routePath) => detachRoutes.find(route => route.path === routePath)
+
+    check('the unmount and enable routes are registered',
+      findDetach(ROUTES.unmount) !== undefined && findDetach(ROUTES.enable) !== undefined,
+      JSON.stringify(detachRoutes.map(route => route.path)))
+
+    // Default mode is detach: the record must survive.
+    {
+      const { res, state } = fakeRes()
+      await findDetach(ROUTES.unmount).handler(fakeReq({
+        method: 'POST',
+        headers: { host: 'localhost:4074', 'content-type': 'application/json' },
+        body: { workspacePath: record.path },
+      }), res)
+      const body = JSON.parse(state.body)
+      check('unmount defaults to the detach mode', body.mode === 'detach', state.body)
+      check('detach keeps the workspace record', body.deregistered === false, state.body)
+      check('detach archived both sessions it could', body.archived.length === 1 && body.archived[0] === 's1', state.body)
+      check('a session that could not be archived is reported',
+        Array.isArray(body.archiveFailed) && body.archiveFailed.length === 1 && body.archiveFailed[0].sessionId === 's2',
+        state.body)
+      check('detach persisted the disabled list', store.isWorkspaceDisabled(record.path))
+      check('detach removed the workspace from the served roots', calls.disabled.includes(record.path))
+    }
+
+    // An explicit deregister removes the record too — but still no session files.
+    {
+      const { res, state } = fakeRes()
+      await findDetach(ROUTES.unmount).handler(fakeReq({
+        method: 'POST',
+        headers: { host: 'localhost:4074', 'content-type': 'application/json' },
+        body: { workspacePath: record.path, mode: 'deregister' },
+      }), res)
+      const body = JSON.parse(state.body)
+      check('the deregister mode removes the workspace record', body.deregistered === true, state.body)
+      check('deregister reached registry.delete', calls.deleted.includes('ws-1'), JSON.stringify(calls.deleted))
+      check('deregister still only archived (never deleted) sessions', body.archived.length === 1, state.body)
+    }
+
+    // archiveSessions: false skips the archiving entirely.
+    {
+      const before = calls.archived.length
+      const { res } = fakeRes()
+      await findDetach(ROUTES.unmount).handler(fakeReq({
+        method: 'POST',
+        headers: { host: 'localhost:4074', 'content-type': 'application/json' },
+        body: { workspacePath: record.path, archiveSessions: false },
+      }), res)
+      check('archiveSessions:false archives nothing', calls.archived.length === before, JSON.stringify(calls.archived))
+    }
+
+    // The legacy boolean spelling still maps onto the new modes.
+    {
+      const { res, state } = fakeRes()
+      await findDetach(ROUTES.unmount).handler(fakeReq({
+        method: 'POST',
+        headers: { host: 'localhost:4074', 'content-type': 'application/json' },
+        body: { workspacePath: record.path, deregister: true },
+      }), res)
+      check('deregister:true still means the deregister mode', JSON.parse(state.body).mode === 'deregister', state.body)
+    }
+
+    // `forget` is the "take it away entirely" mode: the row goes AND the fence
+    // must come down. Clearing only the persisted list would leave the runtime
+    // refusing every operation on a workspace that no longer exists in the
+    // panel — a state the user could never escape, because the re-enable button
+    // lives on the detached list that just stopped showing it.
+    {
+      calls.enabled.length = 0
+      const { res, state } = fakeRes()
+      await findDetach(ROUTES.unmount).handler(fakeReq({
+        method: 'POST',
+        headers: { host: 'localhost:4074', 'content-type': 'application/json' },
+        body: { workspacePath: record.path, mode: 'forget' },
+      }), res)
+      const body = JSON.parse(state.body)
+      check('forget removes the workspace record', body.deregistered === true, state.body)
+      check('forget clears the persisted disabled mark', !store.isWorkspaceDisabled(record.path))
+      check('forget lifts the runtime fence too', calls.enabled.includes(record.path), JSON.stringify(calls.enabled))
+    }
+
+    // Enable re-mounts and unarchives.
+    {
+      const { res, state } = fakeRes()
+      await findDetach(ROUTES.enable).handler(fakeReq({
+        method: 'POST',
+        headers: { host: 'localhost:4074', 'content-type': 'application/json' },
+        body: { workspacePath: record.path },
+      }), res)
+      const body = JSON.parse(state.body)
+      check('enable answers ok', body.ok === true, state.body)
+      check('enable mounted the workspace again', body.workspacePath === record.path, state.body)
+      check('enable cleared the disabled list', !store.isWorkspaceDisabled(record.path))
+      check('enable unarchived the workspace sessions', calls.unarchived.length >= 2, JSON.stringify(calls.unarchived))
+      check('enable reports the workspace as registered', body.registered === true, state.body)
+    }
+
+    // A non-remote path is refused outright on enable.
+    {
+      const { res, state } = fakeRes()
+      await findDetach(ROUTES.enable).handler(fakeReq({
+        method: 'POST',
+        headers: { host: 'localhost:4074', 'content-type': 'application/json' },
+        body: { workspacePath: 'C:/Users/dev/proj' },
+      }), res)
+      check('enable refuses a local path', state.status === 400, String(state.status))
+    }
+
+    // Fences on both new routes.
+    for (const routePath of [ROUTES.unmount, ROUTES.enable]) {
+      const { res, state } = fakeRes()
+      await findDetach(routePath).handler(fakeReq({ method: 'POST', remoteAddress: '10.0.0.5', headers: { 'content-type': 'application/json' } }), res)
+      check(`${routePath} refuses a non-loopback request`, state.status === 403, String(state.status))
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
