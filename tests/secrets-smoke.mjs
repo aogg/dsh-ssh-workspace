@@ -131,7 +131,11 @@ try {
   writeFileSync(sshConfig, 'Host fromconfig\n  HostName 10.0.0.9\n  User deploy\n  Password mine\n', 'utf8')
   check('ssh-config plaintext keeps working', new HostStore(sshConfig, store).resolve('fromconfig').auth.password === 'mine')
   check('ssh-config is never rewritten as ciphertext', readFileSync(sshConfig, 'utf8').includes('Password mine'))
-  check('the key file is only created on demand', existsSync(keyPath()))
+  // The key file outlives every edit and the ssh-config fallback: only the
+  // deletion of the last secret would let it go. It is named for that claim,
+  // not repeated from the "on demand" assertion at the top — a duplicate label
+  // makes two opposite conditions look like one passing test.
+  check('the key file survives edits and the ssh-config fallback', existsSync(keyPath()))
 } finally {
   rmSync(home, { recursive: true, force: true })
 }

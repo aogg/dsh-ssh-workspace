@@ -25,5 +25,11 @@ jobs:
           for f in lib/*.js; do node --check "$f"; done
       - name: Smoke tests (pure subset; live-host suites skip without env)
         run: node tests/run.mjs
+      # The published README links into the repository by absolute URL, because
+      # npm cannot resolve relative paths. That makes a renamed or deleted doc
+      # a silent 404 on the package page, so the links are checked against this
+      # checkout rather than trusted.
+      - name: Check documentation links and anchors
+        run: node scripts/check-doc-links.mjs
       - name: Validate the publish tarball
         run: npm pack --dry-run

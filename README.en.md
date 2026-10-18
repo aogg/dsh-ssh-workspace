@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="./docs/assets/header.png" alt="dsh-ssh-workspace header" width="640" />
+<img src="https://raw.githubusercontent.com/siqyka/dsh-ssh-workspace/main/docs/assets/header.png" alt="dsh-ssh-workspace header" width="640" />
 
 # dsh-ssh-workspace
 
@@ -10,12 +10,12 @@
 no manual sync, no mount driver, no third-party filesystem.
 
 [![version](https://img.shields.io/github/package-json/v/siqyka/dsh-ssh-workspace)](https://github.com/siqyka/dsh-ssh-workspace)
-[![license](https://img.shields.io/github/license/siqyka/dsh-ssh-workspace)](./LICENSE)
+[![license](https://img.shields.io/github/license/siqyka/dsh-ssh-workspace)](https://github.com/siqyka/dsh-ssh-workspace/blob/main/LICENSE)
 ![node](https://img.shields.io/badge/node-%3E%3D%2020-brightgreen)
 ![dsh](https://img.shields.io/badge/DSH-%3E%3D%200.2.0--rc.1-blue)
 ![ssh2](https://img.shields.io/badge/ssh2-%5E1.17.0-lightgrey)
 
-[简体中文](./README.md) · **English**
+[简体中文](https://github.com/siqyka/dsh-ssh-workspace/blob/main/README.md) · **English**
 
 </div>
 
@@ -144,7 +144,7 @@ blank while editing keeps the current value. Deleting a
 host does not automatically unmount its mounted workspaces, but those workspaces
 become inaccessible since the host no longer exists.
 
-> See [docs/hosts.md](./docs/hosts.md) for the storage format, `~/.ssh/config` parsing
+> See [docs/hosts.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/hosts.md) for the storage format, `~/.ssh/config` parsing
 > rules, and the credential policy.
 
 ## Configuration
@@ -175,11 +175,11 @@ become inaccessible since the host no longer exists.
 | `ssh_workspace_forward` | Map a remote port to this machine and return an openable URL |
 | `ssh_workspace_unforward` | Close a port mapping and release the local port |
 
-> For tool parameters, return fields, and error semantics, see [docs/tools.md](./docs/tools.md).
+> For tool parameters, return fields, and error semantics, see [docs/tools.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/tools.md).
 
 ## Capabilities
 
-> The complete inventory by domain (dependencies, degradation, limits included) is in [docs/features.md](./docs/features.md).
+> The complete inventory by domain (dependencies, degradation, limits included) is in [docs/features.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/features.md).
 
 ### Remote files
 
@@ -213,6 +213,8 @@ become inaccessible since the host no longer exists.
 | "Add workspace" gets a remote entry | DSH's "Add workspace" button becomes an anchored menu offering "New local workspace" (DSH's native picker) or "New remote workspace" (choose a host → browse the remote directory level by level → confirm the mount; unwritable directories produce a warning and refuse creation) |
 | Remote workspaces wear a dedicated mark | Workspaces created by this plugin show the plugin's remote mark instead of the plain folder icon in sidebar rows, the workspace picker, and the session page's workspace button |
 | Host management panel | Add / edit / delete hosts (key paths, auth method, notes, …); changes take effect immediately and drop that alias's old connection. `~/.ssh/config` hosts are shown read-only. "Test connection" only probes reachability (it releases the connection it opened, so a probe never doubles as "connect") and reports as a toast at the top that auto-dismisses after a few seconds (click to close early). Connection state is shown inline after the host name, and dropping a connection also tears down that host's port forwards |
+| Directory browser dialog | A host card's "Browse directory" walks the remote tree level by level, uploads a file into the directory on screen, downloads individual files, and can "Mount this directory" in place |
+| Uploads / downloads from the file panel | The "Workspace Files" panel header carries "Upload a file here"; the file tree's row menu adds "Download to this machine" / "Upload a file here" for remote rows only |
 
 ### Connection model
 
@@ -273,23 +275,25 @@ Explicitly **not supported**:
 
 | Doc | Contents |
 | --- | --- |
-| [features.md](./docs/features.md) | **Feature reference**: the complete capability inventory by domain (workspaces / files / execution / transfer / forwarding / UI / security / config / degradation matrix / limits) |
-| [architecture.md](./docs/architecture.md) | Architecture & implementation: the `ctx.fs` / `ctx.shell` / `ctx.subprocess` takeovers, change watching & streaming, built-in bridges, engine & connection model |
-| [protocol.md](./docs/protocol.md) | The `ssh://` path protocol: syntax, normalization, display rules, `file:` URIs, the write fence and the detached fence |
-| [hosts.md](./docs/hosts.md) | Host configuration & auth: storage format, `~/.ssh/config` fallback, panel management |
-| [tools.md](./docs/tools.md) | Agent tool reference: the ten `ssh_workspace_*` tools |
-| [ui.md](./docs/ui.md) | UI guide: the panel, the dual "Add workspace" entry, remote-workspace marks, the port-forward and persistent-shell sections |
-| [forward-persistence.md](./docs/forward-persistence.md) | Port-forward persistence: intent vs. fact, the two disconnect paths agreeing, auto-start |
-| [unmount-modes.md](./docs/unmount-modes.md) | The two unmount modes: `detach` (reversible) vs. `deregister`, session archiving, the disable fence |
-| [development.md](./docs/development.md) | Development, debugging & release: source layout, dependency resolution, packaging |
-| [troubleshooting.md](./docs/troubleshooting.md) | Troubleshooting & FAQ: error semantics, connection issues, known limitations |
-| [CHANGELOG.md](./CHANGELOG.md) | Changelog: additions, fixes and changes per version |
+| [features.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/features.md) | **Feature reference**: the complete capability inventory by domain (workspaces / files / execution / transfer / forwarding / UI / security / config / degradation matrix / limits) |
+| [architecture.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/architecture.md) | Architecture & implementation: the `ctx.fs` / `ctx.shell` / `ctx.subprocess` takeovers, change watching & streaming, built-in bridges, engine & connection model |
+| [protocol.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/protocol.md) | The `ssh://` path protocol: syntax, normalization, display rules, `file:` URIs, the write fence and the detached fence |
+| [hosts.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/hosts.md) | Host configuration & auth: storage format, `~/.ssh/config` fallback, panel management |
+| [tools.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/tools.md) | Agent tool reference: the ten `ssh_workspace_*` tools |
+| [ui.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/ui.md) | UI guide: the panel, the dual "Add workspace" entry, remote-workspace marks, the port-forward and persistent-shell sections |
+| [forward-persistence.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/forward-persistence.md) | Port-forward persistence: intent vs. fact, the two disconnect paths agreeing, auto-start |
+| [unmount-modes.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/unmount-modes.md) | The two unmount modes: `detach` (reversible) vs. `deregister`, session archiving, the disable fence |
+| [development.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/development.md) | Development, debugging & release: source layout, dependency resolution, packaging |
+| [troubleshooting.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/troubleshooting.md) | Troubleshooting & FAQ: error semantics, connection issues, known limitations |
+| [CHANGELOG.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/CHANGELOG.md) | Changelog: additions, fixes and changes per version |
 
 ---
 
+## License
+
 <div align="center">
 
-**[MIT](./LICENSE) © 2026 siqyka**
+**[MIT](https://github.com/siqyka/dsh-ssh-workspace/blob/main/LICENSE) © 2026 siqyka**
 
 <sub>SSH distance, local feel.</sub>
 

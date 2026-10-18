@@ -324,9 +324,10 @@ if (detachedSet.has(path)) continue
 **正是那层围栏**，它会拒绝停用工作区内的任何读取，于是「启用」在结构上永远失败。
 两处都改为走原始连接（`engine.withSftp`）直接 `stat`，与 HTTP 路由的做法一致。
 
-`routes-smoke` 现在 **118 项**（本组增加 22 项：模式默认值、`detach` 不归档而
+`routes-smoke` 现在 **121 项**（本组增加 22 项：模式默认值、`detach` 不归档而
 `deregister` 归档、显式 `archiveSessions` 优先于模式、归档成功/失败上报、
-`deregister: true` 兼容、启用流程、两条新路由的回环围栏），其中 3 项钉住 `/status`
+`deregister: true` 兼容、启用流程、两条新路由的回环围栏；此后下载失败的状态码
+修复又加了 3 项），其中 3 项钉住 `/status`
 必须下发 `sessionIds`：成员列表原样透传、强制转成字符串（会话行按文本匹配 id）、
 缺字段退化为空数组而不是 `undefined`（旧宿主可能整个省略）。
 
@@ -352,9 +353,10 @@ if (detachedSet.has(path)) continue
 把常驻行加回去后「not duplicated」变红。
 
 全套：`node tests/run.mjs` **23/23** 通过。裸检出（无环境变量）下 18 个套件运行、
-合计 663 项断言；`lifecycle` / `boot` / `tool-schemas`（共 160 项 schema 断言）
-与 `live` / `acceptance` 共 5 个套件需要 `DSH_CORE_ROOT` 或真实主机，未提供时
-明确 SKIP。本组相关的 `probe-smoke` 15 项、`detach-smoke` 62 项。
+合计 666 项断言；`lifecycle` / `boot` / `tool-schemas` 与 `live` / `acceptance` 共 5 个
+套件需要 `DSH_CORE_ROOT` 或真实主机，未提供时明确 SKIP。（其中 `tool-schemas` 单独
+是 160 项 schema 断言，`lifecycle` 与 `boot` 是另外两个套件、项数各不相同——别把这
+三个套件当成「合计 160 项」。）本组相关的 `probe-smoke` 15 项、`detach-smoke` 62 项。
 
 ---
 

@@ -369,12 +369,14 @@ shell。接管后，`spec.cwd` 是 `ssh://` 就改开 SSH PTY 通道，返回满
   可把自己的域名解析到 127.0.0.1 从而同源访问），Host 校验把这条路堵死；
   反向代理 / 自定义域名访问会被一并拒绝（预期行为）。
 - POST 路由（`hosts/save`、`hosts/delete`、`hosts/forget-key`、
-  `hosts/disconnect`、`test`、`mount`、`unmount`、`enable`、转发六条、
+  `hosts/disconnect`、`test`、`mount`、`unmount`、`enable`、转发七条、
   `transfer`）额外要求
   `content-type: application/json`，否则 415：
   跨站 HTML 表单只能发 `text/plain` / `urlencoded` / `multipart`，且
   `text/plain` 可伪造出合法 JSON 体，靠内容类型就能把整类跨站写请求挡在
   门外（浏览器半边始终携带该头，不受影响）。
+  `upload` 是唯一例外：它按 `application/octet-stream` 接收原始字节，因此另行
+  自行施加回环与 `Host` 双重校验（`download` / `upload` 都不走 `guard`）。
 - **停用围栏**横跨所有缝：`engine.disabledWorkspaces` 是唯一真相，
   `ctx.fs`、内建 fs 桥、`ctx.shell`、`ctx.subprocess`、终端接管层与
   `transfer` / `download` / `upload` 在建立连接之前统一拒绝。

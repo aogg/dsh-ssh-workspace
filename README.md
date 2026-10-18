@@ -1,5 +1,5 @@
 <div align="center">
-<img src="./docs/assets/header.png" alt="dsh-ssh-workspace header" width="840" />
+<img src="https://raw.githubusercontent.com/siqyka/dsh-ssh-workspace/main/docs/assets/header.png" alt="dsh-ssh-workspace header" width="840" />
 
 # dsh-ssh-workspace
 
@@ -9,12 +9,12 @@
 不需要手动同步、不需要挂载驱动、不需要装任何第三方文件系统。
 
 [![version](https://img.shields.io/github/package-json/v/siqyka/dsh-ssh-workspace)](https://github.com/siqyka/dsh-ssh-workspace)
-[![license](https://img.shields.io/github/license/siqyka/dsh-ssh-workspace)](./LICENSE)
+[![license](https://img.shields.io/github/license/siqyka/dsh-ssh-workspace)](https://github.com/siqyka/dsh-ssh-workspace/blob/main/LICENSE)
 ![node](https://img.shields.io/badge/node-%3E%3D%2020-brightgreen)
 ![dsh](https://img.shields.io/badge/DSH-%3E%3D%200.2.0--rc.1-blue)
 ![ssh2](https://img.shields.io/badge/ssh2-%5E1.17.0-lightgrey)
 
-**简体中文** · [English](./README.en.md)
+**简体中文** · [English](https://github.com/siqyka/dsh-ssh-workspace/blob/main/README.en.md)
 
 </div>
 
@@ -133,7 +133,7 @@ DSH 的所有文件操作都走 `ctx.fs`（`@deepseek-ai/dsh-fs`）这一个服�
 且不会回传到浏览器，编辑时留空表示保持原值。
 删除主机不会自动卸载已挂载的工作区，但那些工作区会因主机不存在而无法访问。
 
-> 存储格式、`~/.ssh/config` 解析规则与凭据策略细节见 [docs/hosts.md](./docs/hosts.md)。
+> 存储格式、`~/.ssh/config` 解析规则与凭据策略细节见 [docs/hosts.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/hosts.md)。
 
 ## 配置
 
@@ -163,11 +163,11 @@ DSH 的所有文件操作都走 `ctx.fs`（`@deepseek-ai/dsh-fs`）这一个服�
 | `ssh_workspace_forward` | 把远端端口映射到本机，返回可打开的 URL |
 | `ssh_workspace_unforward` | 关闭端口映射并释放本地端口 |
 
-> 工具的参数、返回字段与错误语义详见 [docs/tools.md](./docs/tools.md)。
+> 工具的参数、返回字段与错误语义详见 [docs/tools.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/tools.md)。
 
 ## 能力一览
 
-> 完整的按域清单（含依赖、降级与边界）见 [docs/features.md](./docs/features.md)。
+> 完整的按域清单（含依赖、降级与边界）见 [docs/features.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/features.md)。
 
 ### 远端文件
 
@@ -201,6 +201,8 @@ DSH 的所有文件操作都走 `ctx.fs`（`@deepseek-ai/dsh-fs`）这一个服�
 | 「添加工作区」远程入口 | 「添加工作区」按钮替换为锚定菜单：「新建本地工作区」（DSH 原生选择器）或「新建远程工作区」（选主机 → 逐级浏览远端目录 → 确认挂载；目录不可写时警告并拒绝创建） |
 | 远程工作区专用标记 | 本插件创建的远程工作区在侧栏行、工作区选择器与会话页工作区按钮处显示远端标记图标，而不是普通文件夹图标 |
 | 主机管理面板 | 添加 / 编辑 / 删除主机（私钥路径、认证方式、备注等），改动立即生效并丢弃该别名旧连接；`~/.ssh/config` 主机只读展示；「测试连接」只探测可达性（连上即释放，不会留下连接），结果以顶部 toast 弹出，数秒自动消失（点击可提前关闭）；「已连接」状态内联在主机名后，断开时连带拆除该主机的端口转发 |
+| 浏览目录对话框 | 主机卡片的「浏览目录」逐级浏览远端目录、上传文件到当前目录、逐行下载文件，并可就地「挂载此目录」 |
+| 文件面板上传 / 下载 | 「工作区文件」面板头部有「上传文件到此目录」，文件树行右键菜单另有「下载到本机」/「上传文件到此目录」（仅远端行） |
 
 ### 连接模型
 
@@ -249,23 +251,25 @@ exec 通道；空闲 30 分钟回收（有操作在飞的连接不回收）。
 
 | 文档 | 内容 |
 | --- | --- |
-| [features.md](./docs/features.md) | **功能说明**：按能力域列出的完整功能清单（工作区 / 文件 / 执行 / 传输 / 转发 / 界面 / 安全 / 配置 / 降级矩阵 / 边界） |
-| [architecture.md](./docs/architecture.md) | 架构与实现：`ctx.fs` / `ctx.shell` / `ctx.subprocess` 接管、变更监视与流式读取、内建桥接、引擎与连接模型 |
-| [protocol.md](./docs/protocol.md) | `ssh://` 路径协议：语法、规范化、显示规则、`file:` URI、写入围栏与停用围栏 |
-| [hosts.md](./docs/hosts.md) | 主机配置与认证：存储格式、`~/.ssh/config` 回退、面板管理 |
-| [tools.md](./docs/tools.md) | Agent 工具参考：十个 `ssh_workspace_*` 工具 |
-| [ui.md](./docs/ui.md) | 界面指南：面板、添加工作区双入口、远程工作区标记、端口转发与持久会话区 |
-| [forward-persistence.md](./docs/forward-persistence.md) | 端口转发持久化：意图与事实的分离、两条断开路径的一致性、自动开启 |
-| [unmount-modes.md](./docs/unmount-modes.md) | 卸载的两种模式：`detach`（可逆）与 `deregister`、会话归档、停用围栏 |
-| [development.md](./docs/development.md) | 开发、调试与发布：源码结构、依赖解析、打包流程 |
-| [troubleshooting.md](./docs/troubleshooting.md) | 排查与常见问题：错误语义、连接问题、已知限制 |
-| [CHANGELOG.md](./CHANGELOG.md) | 更新日志：各版本的新增、修复与变更 |
+| [features.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/features.md) | **功能说明**：按能力域列出的完整功能清单（工作区 / 文件 / 执行 / 传输 / 转发 / 界面 / 安全 / 配置 / 降级矩阵 / 边界） |
+| [architecture.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/architecture.md) | 架构与实现：`ctx.fs` / `ctx.shell` / `ctx.subprocess` 接管、变更监视与流式读取、内建桥接、引擎与连接模型 |
+| [protocol.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/protocol.md) | `ssh://` 路径协议：语法、规范化、显示规则、`file:` URI、写入围栏与停用围栏 |
+| [hosts.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/hosts.md) | 主机配置与认证：存储格式、`~/.ssh/config` 回退、面板管理 |
+| [tools.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/tools.md) | Agent 工具参考：十个 `ssh_workspace_*` 工具 |
+| [ui.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/ui.md) | 界面指南：面板、添加工作区双入口、远程工作区标记、端口转发与持久会话区 |
+| [forward-persistence.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/forward-persistence.md) | 端口转发持久化：意图与事实的分离、两条断开路径的一致性、自动开启 |
+| [unmount-modes.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/unmount-modes.md) | 卸载的两种模式：`detach`（可逆）与 `deregister`、会话归档、停用围栏 |
+| [development.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/development.md) | 开发、调试与发布：源码结构、依赖解析、打包流程 |
+| [troubleshooting.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/troubleshooting.md) | 排查与常见问题：错误语义、连接问题、已知限制 |
+| [CHANGELOG.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/CHANGELOG.md) | 更新日志：各版本的新增、修复与变更 |
 
 ---
 
+## 许可证
+
 <div align="center">
 
-**[MIT](./LICENSE) © 2026 siqyka**
+**[MIT](https://github.com/siqyka/dsh-ssh-workspace/blob/main/LICENSE) © 2026 siqyka**
 
 <sub>用 SSH 的距离，换来本地的手感。</sub>
 

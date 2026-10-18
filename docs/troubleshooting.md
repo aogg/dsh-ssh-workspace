@@ -16,6 +16,7 @@
 | `FS_NOT_TEXT` | 二进制或非法 UTF-8 | 读 / 编辑二进制文件被拒；改用 `ssh_workspace_exec` 配合远端命令处理 |
 | `FS_TOO_LARGE` | 超过读取上限 | 文件过大，用远端命令查看而非整读 |
 | `FS_NOT_REGULAR_FILE` / `FS_NOT_DIRECTORY` | 目标类型不符 | 对目录 read、对文件 listDir 等 |
+| `FS_ABORTED` | 操作被中止 | 调用方 signal 被 abort（用户取消、超时、会话关闭）；不是故障，重试即可 |
 | `FS_IO_ERROR` | 其它 SFTP 失败 | SFTP 服务端报错、连接中断等 |
 
 ### 一整个工作区都在报错？先看它是不是被停用了

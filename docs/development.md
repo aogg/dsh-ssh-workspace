@@ -55,7 +55,7 @@ profile 安装（`pnpm install`）会让第 1 步命中 profile 内的解析链�
 `tests/` 下是一组按依赖分层的冒烟套件；`node tests/run.mjs` 依次以子进程运行
 全部套件（也可 `node tests/run.mjs live acceptance` 只跑指定套件）。共 23 个套件，
 断言数如下（下表按裸检出实测，`DSH_CORE_ROOT` / `DSH_WS_TEST_ALIAS` 未设置时
-5 个套件 SKIP，其余 18 个套件合计 663 项断言）：
+5 个套件 SKIP，其余 18 个套件合计 666 项断言）：
 
 | 套件 | 前置 | 项数 | 覆盖 |
 | --- | --- | --- | --- |
@@ -75,7 +75,7 @@ profile 安装（`pnpm install`）会让第 1 步命中 profile 内的解析链�
 | `forward-smoke` | 无 | 34 | 隧道本身：建立 / 拆除、`closeForAlias` 按主机拆除且**只拆该主机**、`holds` 引用计数、关闭转发不得断开主机 |
 | `forward-persist-smoke` | 无 | 102 | 已存映射：意图 / 事实分离、端口预检三态、占用端口不落盘、自动开启幂等、连接断开留痕、**主动断开主机与端口行「断开」逐字段一致**（`live` / `enabled` / `error` 三元组） |
 | `capabilities-smoke` | 无 | 19 | 主机能力探测（rg / git / inotifywait）与提示渲染 |
-| `routes-smoke` | 无 | 118 | 22 条路由的请求 / 响应契约、两种卸载模式、归档、停用围栏、`sessionIds` 强制转字符串、断开必须连带拆除转发且走 `closeAlias` |
+| `routes-smoke` | 无 | 121 | 22 条路由的请求 / 响应契约、两种卸载模式、归档、停用围栏、`sessionIds` 强制转字符串、断开必须连带拆除转发且走 `closeAlias`、下载失败必须是非 2xx |
 | `secrets-smoke` | 无 | 26 | 凭据存储与加密、迁移、`~/.ssh/config` 明文兼容、密钥文件按需创建 |
 | `lifecycle-smoke` | `DSH_CORE_ROOT` | SKIP | 真实 Cordis 下 5 种服务装配顺序的接管 / 路由 / 工具注册（期望 22 路由 / 10 工具） |
 | `boot-smoke` | `DSH_CORE_ROOT`（远端段另需 `DSH_WS_TEST_ALIAS`） | SKIP | 生产顺序引导、`ctx.fs` 接管与还原、工具端到端、挂载 → 停用 → 读被拒 → 启用往返 |
@@ -98,7 +98,26 @@ profile 安装（`pnpm install`）会让第 1 步命中 profile 内的解析链�
 CI（`.github/workflows/ci.yml`）在 push / PR 上执行：`npm ci --ignore-scripts`
 （`.npmrc` 的 `legacy-peer-deps` 使锁文件只含 ssh2 运行时树，`@deepseek-ai/*`
 peer 由宿主提供）→ `node --check` 全部 `lib/*.js` → `node tests/run.mjs` →
-`npm pack --dry-run`。
+`node scripts/check-doc-links.mjs` → `npm pack --dry-run`。
+
+## 文档链接
+
+`node scripts/check-doc-links.mjs` 校验三类目标，它们坏掉的方式各不相同：
+
+| 类型 | 校验 | 为什么会坏 |
+| --- | --- | --- |
+| 相对路径 | 能从该文件所在目录解析到磁盘上的文件 | 改名或删除页面 |
+| `#锚点` | 能在**同文件**（跨文件时在目标文件）的标题里找到 | 改了标题却忘了目录里那一条 |
+| 仓库内的绝对 GitHub URL | 路径部分能落到工作树 | 重命名 `docs/` 下的文件 |
+
+第三类是根 README 才有的形态，且**不能改回相对路径**：`package.json` 的 `files`
+只发 `lib/`、`cordis.patch.yml` 与 `README.md`，而 npm 的包页面与仓库文件树没有
+对应关系，`./docs/features.md` 在那里会解析成 `npmjs.com/package/…/docs/features.md`
+——十篇文档、`CHANGELOG.md` 与头图全部 404。绝对 URL 在 npm 与 GitHub 上都能解析，
+所以根 README 用绝对拼写，`docs/` 内部仍用相对拼写（只在仓库里阅读）。
+
+CI 与 Release 都跑这个脚本：它守的是「已发布到 npm 的 README 不会指向 404」，
+而那正是本地 `github.com` 上看起来一切正常、在 npm 上却全是死链的一类问题。
 
 ## 打包与安装
 
