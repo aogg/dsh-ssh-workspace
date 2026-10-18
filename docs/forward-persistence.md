@@ -140,9 +140,47 @@ settings.autoStart（UI 写入，运行时真相）
 
 ---
 
-## 六、连接断开之后
+## 六、连接与转发：两条方向都必须是单向的
 
-连接一断，`ForwardManager` 整批拆除（`#teardownWhere(entry => entry.record === record)`）。此时会出现「意图开、实际关」。
+转发与连接的关系在两个方向上都必须是**单向**的，这是本节的验收口径：
+
+| 方向 | 规则 | 实现 |
+| --- | --- | --- |
+| 连接断 → 转发断 | **必须** | `ForwardManager.closeForAlias(alias)`，由 `hosts/disconnect` 路由在 `engine.forget()` 之前调用 |
+| 转发断 → 连接断 | **绝不** | `#teardown` 只递减 `record.holds`，从不触碰 `client` |
+
+### 连接断 → 转发断
+
+连接自身会发 `close` 事件，`ForwardManager` 也订阅了它。但那**不是一条可靠的路径**：
+
+- ssh2 的 client 被 `destroy()` 而不发事件时，事件不会到达；
+- 连接被替换（重连、配置变更）时，旧记录上的监听器可能已无人持有；
+- 测试替身通常根本不实现事件。
+
+所以 `hosts/disconnect` 路由**先**按 alias 显式拆掉转发，再 `engine.forget()`：
+
+```js
+const closedForwards = forwards?.closeForAlias?.(alias, 'SSH connection closed') ?? 0
+engine.forget(alias)
+```
+
+返回值里的 `closedForwards` 让调用方能验证「断开确实带走了隧道」，而不是只能相信它发生了。
+
+### 转发断 → 连接断
+
+反向不成立，而且是**构造上**不成立：`#teardown` 只做三件事——关闭 listener、销毁 socket、递减 `record.holds`。它没有任何路径可以关闭 `client`。
+
+这一条有测试守着，因为两个动作碰的是同一条 record，未来一次「顺手复用」的重构就可能把方向接反，而那种错误是静默的：关掉一个隧道会连带掐断整台主机的连接。
+
+### 转发开启 → 连接建立
+
+第三条相关规则：**开转发时若该主机未连接，就先连接**。`open()` 的第一步就是 `await this.engine.acquire(target)`，`acquire` 在池里没有可用记录时自行拨号。所以「开端口」本身就是一次连接动作。
+
+对应的反向仍然成立：`close()` 不调用 `acquire`。
+
+### 连接断开之后的留痕
+
+连接一断，`ForwardManager` 整批拆除（`#teardownWhere(entry => entry.record === record)`），`closeForAlias` 是同一件事的显式版本。此时会出现「意图开、实际关」。
 
 `ForwardManager` 新增 `onClosed` 回调，由 `SavedForwardManager.noteClosed()` 消费，把原因记进 `failures`。
 

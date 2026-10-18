@@ -46,6 +46,7 @@ const SUITES = [
   'insert-once',
   'locale-register',
   'detach',
+  'probe',
   'lifecycle',
   'phase6',
   'store-lock',

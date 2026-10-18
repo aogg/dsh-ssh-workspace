@@ -121,6 +121,35 @@ if (typeof clientRel === 'string' && existsSync(path.join(packageRoot, clientRel
   check('the client bundle is inspectable for declared classes', false, 'bundle missing')
 }
 
+console.log('\n[detached rows refuse interaction, not just attention]')
+// A detached workspace's row must not only LOOK off — its buttons must stop
+// responding. The mark alone is decoration; the pointer-events rule is what
+// actually refuses the click, and it is easy to delete without noticing because
+// the row still renders, merely greyed.
+if (typeof clientRel === 'string' && existsSync(path.join(packageRoot, clientRel))) {
+  const client = readFileSync(path.join(packageRoot, clientRel), 'utf8')
+  check('a detached row declares its actions inert',
+    /\[data-sshwsp-disabled="1"\]\s+button[^{]*\{[^}]*pointer-events:\s*none/.test(client),
+    'a greyed row whose buttons still fire is a lie the user only discovers by clicking')
+  check('...and the selector is generic, because those buttons belong to DSH',
+    client.includes('[data-sshwsp-disabled="1"] button'),
+    'naming our own class here would miss the sidebar row entirely')
+  check('...while the row itself stays clickable, so its sessions are reachable',
+    !/\[data-sshwsp-disabled="1"\]\s*\{[^}]*pointer-events:\s*none/.test(client),
+    'disabling the row would hide the sessions that detach deliberately keeps')
+
+  // CSS alone is not enough: `pointer-events: none` blocks the mouse but a row
+  // reached with Tab still fires its actions on Enter. The keyboard path needs
+  // `inert`, and the undo has to restore what was there rather than assuming
+  // nothing was — DSH may have set its own tabindex or aria-disabled.
+  check('the detached row also removes its buttons from the tab order',
+    client.includes("control.setAttribute('inert', '')") && client.includes("control.setAttribute('tabindex', '-1')"),
+    'a keyboard user could still trigger a disabled action')
+  check('the undo remembers what it overwrote',
+    client.includes('sshwspInertPrior') && /if \(was === null\) control\.removeAttribute\(name\)/.test(client),
+    'blindly removing attributes would delete values DSH set itself')
+}
+
 console.log('\n[publish whitelist]')
 const files = pkg.files ?? []
 check('lib/ ships in the tarball', files.includes('lib/'), JSON.stringify(files))

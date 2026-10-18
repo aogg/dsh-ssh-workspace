@@ -166,7 +166,7 @@ become inaccessible since the host no longer exists.
 | --- | --- |
 | `ssh_workspace_hosts` | List available hosts (store + `~/.ssh/config` candidates) |
 | `ssh_workspace_mount` | Register a remote directory as a workspace and return an `ssh://` path |
-| `ssh_workspace_unmount` | Detach a remote workspace (record and sessions kept, sessions archived — reversible) |
+| `ssh_workspace_unmount` | Detach a remote workspace (the record and its sessions are kept by default, so it is reversible; opting into "also remove the record" archives the sessions and deletes the record) |
 | `ssh_workspace_enable` | Mount a detached workspace again and unarchive its sessions |
 | `ssh_workspace_status` | Mounted / detached lists, connections, forwards, and persistent sessions |
 | `ssh_workspace_exec` | Run a shell command **on the remote host** (optionally `run_in_background`) |
@@ -210,7 +210,7 @@ become inaccessible since the host no longer exists.
 | Drag or right-click a file onto the task | Files and folders in the tree can be **dragged straight onto the chat input** (dashed highlight while hovering; releasing inserts the reference chip) or picked via **right-click → "Add to task"** — both produce exactly what an `@` completion selection would |
 | "Add workspace" gets a remote entry | DSH's "Add workspace" button becomes an anchored menu offering "New local workspace" (DSH's native picker) or "New remote workspace" (choose a host → browse the remote directory level by level → confirm the mount; unwritable directories produce a warning and refuse creation) |
 | Remote workspaces wear a dedicated mark | Workspaces created by this plugin show the plugin's remote mark instead of the plain folder icon in sidebar rows, the workspace picker, and the session page's workspace button |
-| Host management panel | Add / edit / delete hosts (key paths, auth method, notes, …); changes take effect immediately and drop that alias's old connection. `~/.ssh/config` hosts are shown read-only. "Test connection" results appear as a toast at the top that auto-dismisses after a few seconds (click to close early). Connection state is shown inline after the host name, and a connection can be dropped on demand |
+| Host management panel | Add / edit / delete hosts (key paths, auth method, notes, …); changes take effect immediately and drop that alias's old connection. `~/.ssh/config` hosts are shown read-only. "Test connection" only probes reachability (it releases the connection it opened, so a probe never doubles as "connect") and reports as a toast at the top that auto-dismisses after a few seconds (click to close early). Connection state is shown inline after the host name, and dropping a connection also tears down that host's port forwards |
 
 ### Connection model
 

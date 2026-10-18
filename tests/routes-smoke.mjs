@@ -14,6 +14,7 @@
  */
 
 import { readFileSync } from 'node:fs'
+import { createServer } from 'node:net'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -573,16 +574,27 @@ function fakeUploadReq ({ url, host = 'localhost:4074', chunks, method = 'POST' 
       const body = JSON.parse(state.body)
       check('unmount defaults to the detach mode', body.mode === 'detach', state.body)
       check('detach keeps the workspace record', body.deregistered === false, state.body)
-      check('detach archived both sessions it could', body.archived.length === 1 && body.archived[0] === 's1', state.body)
-      check('a session that could not be archived is reported',
-        Array.isArray(body.archiveFailed) && body.archiveFailed.length === 1 && body.archiveFailed[0].sessionId === 's2',
-        state.body)
+      // Detach keeps the record, so the sidebar group and its sessions stay.
+      // Archiving here would empty the very group the user chose to keep.
+      check('detach archives nothing, so the kept group stays populated',
+        body.archived.length === 0, state.body)
+      check('detach reports no archive failures either',
+        body.archiveFailed === undefined, state.body)
       check('detach persisted the disabled list', store.isWorkspaceDisabled(record.path))
       check('detach removed the workspace from the served roots', calls.disabled.includes(record.path))
     }
 
     // An explicit deregister removes the record too — but still no session files.
+    // Requirement: "also delete the workspace record" must remove the row from
+    // BOTH surfaces. Deleting the record takes the sidebar row; the panel's
+    // detached list is driven by the persisted mark, so that mark has to come
+    // down as well — otherwise the panel keeps offering a re-enable button for a
+    // workspace that no longer exists, over a path the runtime still refuses.
     {
+      calls.enabled.length = 0
+      // Pre-mark it detached, so the assertion below can tell "cleared" from
+      // "was never set".
+      store.disableWorkspace(record.path)
       const { res, state } = fakeRes()
       await findDetach(ROUTES.unmount).handler(fakeReq({
         method: 'POST',
@@ -593,18 +605,60 @@ function fakeUploadReq ({ url, host = 'localhost:4074', chunks, method = 'POST' 
       check('the deregister mode removes the workspace record', body.deregistered === true, state.body)
       check('deregister reached registry.delete', calls.deleted.includes('ws-1'), JSON.stringify(calls.deleted))
       check('deregister still only archived (never deleted) sessions', body.archived.length === 1, state.body)
+      check('deregister clears the persisted mark, so the panel row goes too',
+        !store.isWorkspaceDisabled(record.path))
+      check('deregister lifts the runtime fence, so nothing refuses a gone workspace',
+        calls.enabled.includes(record.path), JSON.stringify(calls.enabled))
     }
 
-    // archiveSessions: false skips the archiving entirely.
+    // `forget` is the legacy spelling of the same mode: the two must not drift
+    // apart, because a caller using the old name would otherwise keep the
+    // re-enable button that this change exists to remove.
+    {
+      calls.enabled.length = 0
+      store.disableWorkspace(record.path)
+      const { res, state } = fakeRes()
+      await findDetach(ROUTES.unmount).handler(fakeReq({
+        method: 'POST',
+        headers: { host: 'localhost:4074', 'content-type': 'application/json' },
+        body: { workspacePath: record.path, mode: 'forget' },
+      }), res)
+      const body = JSON.parse(state.body)
+      check('forget is normalized to the deregister mode', body.mode === 'deregister', state.body)
+      check('forget removes the workspace record', body.deregistered === true, state.body)
+      check('forget clears the persisted disabled mark', !store.isWorkspaceDisabled(record.path))
+      check('forget lifts the runtime fence too', calls.enabled.includes(record.path), JSON.stringify(calls.enabled))
+    }
+
+    // An explicit `archiveSessions` still wins over the mode default, so a
+    // caller that wants to hide the sessions while keeping the record can ask
+    // for it. This is what makes the default a policy rather than a hard rule.
+    {
+      const before = calls.archived.length
+      const { res, state } = fakeRes()
+      await findDetach(ROUTES.unmount).handler(fakeReq({
+        method: 'POST',
+        headers: { host: 'localhost:4074', 'content-type': 'application/json' },
+        body: { workspacePath: record.path, mode: 'detach', archiveSessions: true },
+      }), res)
+      const body = JSON.parse(state.body)
+      check('an explicit archiveSessions:true archives even on detach',
+        calls.archived.length === before + 2 && body.archived.length === 1, state.body)
+      check('...and the failure is still reported', body.archiveFailed?.length === 1, state.body)
+    }
+
+    // The reverse: archiveSessions:false on deregister keeps the sessions
+    // visible even though the row goes away.
     {
       const before = calls.archived.length
       const { res } = fakeRes()
       await findDetach(ROUTES.unmount).handler(fakeReq({
         method: 'POST',
         headers: { host: 'localhost:4074', 'content-type': 'application/json' },
-        body: { workspacePath: record.path, archiveSessions: false },
+        body: { workspacePath: record.path, mode: 'deregister', archiveSessions: false },
       }), res)
-      check('archiveSessions:false archives nothing', calls.archived.length === before, JSON.stringify(calls.archived))
+      check('archiveSessions:false archives nothing even on deregister',
+        calls.archived.length === before, JSON.stringify(calls.archived))
     }
 
     // The legacy boolean spelling still maps onto the new modes.
@@ -616,25 +670,6 @@ function fakeUploadReq ({ url, host = 'localhost:4074', chunks, method = 'POST' 
         body: { workspacePath: record.path, deregister: true },
       }), res)
       check('deregister:true still means the deregister mode', JSON.parse(state.body).mode === 'deregister', state.body)
-    }
-
-    // `forget` is the "take it away entirely" mode: the row goes AND the fence
-    // must come down. Clearing only the persisted list would leave the runtime
-    // refusing every operation on a workspace that no longer exists in the
-    // panel — a state the user could never escape, because the re-enable button
-    // lives on the detached list that just stopped showing it.
-    {
-      calls.enabled.length = 0
-      const { res, state } = fakeRes()
-      await findDetach(ROUTES.unmount).handler(fakeReq({
-        method: 'POST',
-        headers: { host: 'localhost:4074', 'content-type': 'application/json' },
-        body: { workspacePath: record.path, mode: 'forget' },
-      }), res)
-      const body = JSON.parse(state.body)
-      check('forget removes the workspace record', body.deregistered === true, state.body)
-      check('forget clears the persisted disabled mark', !store.isWorkspaceDisabled(record.path))
-      check('forget lifts the runtime fence too', calls.enabled.includes(record.path), JSON.stringify(calls.enabled))
     }
 
     // Enable re-mounts and unarchives.
@@ -669,6 +704,169 @@ function fakeUploadReq ({ url, host = 'localhost:4074', chunks, method = 'POST' 
       const { res, state } = fakeRes()
       await findDetach(routePath).handler(fakeReq({ method: 'POST', remoteAddress: '10.0.0.5', headers: { 'content-type': 'application/json' } }), res)
       check(`${routePath} refuses a non-loopback request`, state.status === 403, String(state.status))
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+// --- test connection / disconnect ------------------------------------------
+//
+// Two requirements, both about what these two endpoints must NOT leave behind:
+//
+//   1. dropping the SSH connection takes its port forwards with it;
+//   2. "test" proves the host answers and then releases the connection, so a
+//      probe never quietly doubles as "connect".
+//
+// The second is asserted from the pool's own perspective: after a successful
+// test the alias must be ABSENT from the pool, not merely reported as released.
+{
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { HostConfigStore } = await import(pathToFileURL(path.join(pluginRoot, 'lib/store.js')).href)
+  const { ForwardManager } = await import(pathToFileURL(path.join(pluginRoot, 'lib/forward.js')).href)
+
+  const dir = mkdtempSync(path.join(tmpdir(), 'dsh-routes-probe-'))
+  try {
+    const store = new HostConfigStore(path.join(dir, 'dsh-ssh.json'))
+
+    // A pool double: `acquire` inserts, `forget` removes — the two operations
+    // the routes use to establish and release a connection.
+    const pool = new Map()
+    const makeRecord = (holds = 0) => ({ alias: 'alpha', client: { end () {}, once () {}, off () {} }, holds, inFlight: 0, idleAt: Date.now(), broken: false })
+    const forgets = []
+    const probeEngine = {
+      pool,
+      store: { entryStore: store },
+      capabilities: new Map(),
+      async acquire (alias) {
+        const existing = pool.get(alias)
+        if (existing !== undefined) return existing
+        const record = makeRecord()
+        pool.set(alias, record)
+        return record
+      },
+      forget (alias) { forgets.push(alias); pool.delete(alias) },
+      assertNotDisabled () {},
+      async withSftp (_alias, fn) { return await fn({ stat: (_p, cb) => cb(undefined, { isDirectory: () => true }) }) },
+    }
+
+    // A forward manager whose "connection" is the pool record above, so the
+    // hold bookkeeping is real code rather than a stub.
+    const forwardsReal = new ForwardManager({ engine: probeEngine })
+    const probeRoutes = makeRoutes({
+      engine: probeEngine,
+      router: { assertEnabled () {} },
+      forwards: forwardsReal,
+      ctx: { get: () => undefined },
+    })
+    const findProbe = (routePath) => probeRoutes.find(route => route.path === routePath)
+    check('the test and disconnect routes are registered',
+      findProbe(ROUTES.test) !== undefined && findProbe(ROUTES.hostDisconnect) !== undefined)
+
+    // --- test proves the host, then releases it ---------------------------
+    {
+      pool.clear()
+      forgets.length = 0
+      const { res, state } = fakeRes()
+      await findProbe(ROUTES.test).handler(fakeReq({
+        method: 'POST',
+        headers: { host: 'localhost:4074', 'content-type': 'application/json' },
+        body: { alias: 'alpha' },
+      }), res)
+      const body = JSON.parse(state.body)
+      check('a successful test answers ok', body.ok === true, state.body)
+      check('a successful test reports the round trip', Number.isInteger(body.durationMs), state.body)
+      check('a successful test reports that it released the connection', body.released === true, state.body)
+      check('a successful test leaves the pool empty', pool.size === 0, String(pool.size))
+      check('a successful test went through forget()', forgets.includes('alpha'), JSON.stringify(forgets))
+    }
+
+    // A test whose connection is pinned by an open forward must NOT tear it
+    // down: doing so would break a tunnel the user never asked to close.
+    {
+      pool.clear()
+      forgets.length = 0
+      const record = makeRecord()
+      pool.set('alpha', record)
+      // Pin it the way a real forward does.
+      record.holds = 1
+      const { res, state } = fakeRes()
+      await findProbe(ROUTES.test).handler(fakeReq({
+        method: 'POST',
+        headers: { host: 'localhost:4074', 'content-type': 'application/json' },
+        body: { alias: 'alpha' },
+      }), res)
+      const body = JSON.parse(state.body)
+      check('a test still answers ok while a forward holds the connection', body.ok === true, state.body)
+      check('a held connection is not released', body.released === false, state.body)
+      check('a held connection survives the probe', pool.has('alpha') === true)
+      check('a held connection explains why it stayed', String(body.heldBy).includes('forward'), state.body)
+    }
+
+    // A connection the user ALREADY had open is not this probe's to drop.
+    // Releasing it would turn "check the host answers" into "disconnect me".
+    {
+      pool.clear()
+      forgets.length = 0
+      pool.set('alpha', makeRecord())
+      const { res, state } = fakeRes()
+      await findProbe(ROUTES.test).handler(fakeReq({
+        method: 'POST',
+        headers: { host: 'localhost:4074', 'content-type': 'application/json' },
+        body: { alias: 'alpha' },
+      }), res)
+      const body = JSON.parse(state.body)
+      check('a pre-existing connection is not released by a test', body.released === false, state.body)
+      check('a pre-existing connection survives the probe', pool.has('alpha') === true)
+      check('a pre-existing connection explains why it stayed', String(body.heldBy).includes('already open'), state.body)
+      check('a pre-existing connection was not forgotten', forgets.length === 0, JSON.stringify(forgets))
+    }
+
+    // --- disconnect takes the forwards with it ----------------------------
+    {
+      pool.clear()
+      // A saved row is not needed: a live tunnel is what matters here.
+      const record = makeRecord()
+      pool.set('alpha', record)
+      const opened = await forwardsReal.open('alpha', { remotePort: 8080, localPort: 0 })
+      check('a forward is live before the disconnect', forwardsReal.list().length === 1, JSON.stringify(forwardsReal.list()))
+      check('the forward pinned the connection', record.holds === 1, String(record.holds))
+
+      const { res, state } = fakeRes()
+      await findProbe(ROUTES.hostDisconnect).handler(fakeReq({
+        method: 'POST',
+        headers: { host: 'localhost:4074', 'content-type': 'application/json' },
+        body: { alias: 'alpha' },
+      }), res)
+      const body = JSON.parse(state.body)
+      check('disconnect answers ok', body.ok === true, state.body)
+      check('disconnect reports the connection gone', body.disconnected === true, state.body)
+      check('disconnect reports how many forwards it closed', body.closedForwards === 1, state.body)
+      check('disconnect removed the forward', forwardsReal.list().length === 0, JSON.stringify(forwardsReal.list()))
+      check('disconnect released the hold', record.holds === 0, String(record.holds))
+      check('disconnect dropped the pooled connection', pool.size === 0, String(pool.size))
+      check('the local port is free again', await new Promise((resolve) => {
+        const probe = createServer(() => {})
+        probe.once('error', () => resolve(false))
+        probe.listen(opened.localPort, '127.0.0.1', () => { probe.close(() => resolve(true)) })
+      }) === true, String(opened.localPort))
+    }
+
+    // --- closing a forward must NOT disconnect the host -------------------
+    //
+    // The reverse direction: a tunnel going away is not a reason to drop the
+    // connection. Asserted because both actions touch the same record, and a
+    // future refactor that routed one through the other would be silent.
+    {
+      pool.clear()
+      const record = makeRecord()
+      pool.set('alpha', record)
+      const opened = await forwardsReal.open('alpha', { remotePort: 8081, localPort: 0 })
+      forwardsReal.close(opened.id)
+      check('closing a forward releases its hold', record.holds === 0, String(record.holds))
+      check('closing a forward keeps the host connected', pool.has('alpha') === true)
+      forwardsReal.dispose()
     }
   } finally {
     rmSync(dir, { recursive: true, force: true })

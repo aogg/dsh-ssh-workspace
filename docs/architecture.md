@@ -173,7 +173,8 @@ receiver 原样转发。
 
 | 桥 | 行为 |
 | --- | --- |
-| `fs.mkdir` / `stat` / `lstat` / `realpath` | 走 SFTP；`mkdir` 是写操作、受挂载围栏约束；`realpath` 返回词法规范化的 `ssh://` 拼写（不请求服务器 realpath），与会话 header、工作区登记保持一致 |
+| `fs.mkdir` | 走 SFTP；写操作、受挂载围栏约束 |
+| `fs.stat` / `lstat` / `realpath` | **身份探针**，见下节——有活连接时走 SFTP 取真实属性，无连接时对本插件挂载过的路径给出词法 / 合成答案，**绝不因探测而拨号** |
 | `fs.readdir` | 走 SFTP；名字数组与 `withFileTypes` 的 `Dirent` 两种形态都复刻——类型判别取条目自身属性，符号链接既非文件也非目录（`@` 补全因此不会下钻目录符号链接）；`recursive` 明确 `ENOTSUP`。`@` 补全的远端扫描即此路径 |
 | `fs.copyFile` | ssh 源经 SFTP 读（错误按 errno 映射，`FS_NOT_FOUND` → `ENOENT`）；目标为本机 scratch 时另镜像写远端（`GIT_INDEX_FILE` 指向的文件必须真在远端） |
 | `fs.open(path, 'r')` | 只读 SFTP FileHandle（`stat` / `read` / `readFile` / `close`；单次读封顶 256KB），`inFlight` 钉住连接防止空闲回收；写模式同步 `EINVAL` |
@@ -181,6 +182,33 @@ receiver 原样转发。
 | `path.isAbsolute` | `ssh://` 恒真 |
 | `path.resolve` / `join` | 含 `ssh://` 时折叠为规范拼写——绝对 POSIX 参数替换远端路径、相对段追加、Windows 绝对参数复位回本机；左侧参数被绝对参数吞掉，与 node 语义一致 |
 | `path.relative` | 同别名返回 POSIX 相对段（变更面板的 `display` 即工作区相对路径）；混合操作数返回右操作数，`isInside` 因此判「不在内部」 |
+
+### 身份探针不得拨号
+
+`stat` / `lstat` / `realpath` 是被**宿主主动**调用的，而且发生在用户操作之前：
+`WorkspaceRegistry` 在 `init` 阶段对每个会话 header 的 cwd 做
+`realpath` + `stat`（`indexHeader`），侧边栏渲染时还会问每个工作区的状态。
+这三条原本都经 `engine.withSftp()` → `engine.acquire()`，而 `acquire()` **就是建立连接**。
+
+后果是：**只要启动 DSH，所有已挂载工作区涉及的主机都会被连上**。用户离开时是全断开
+状态，重启后却发现每条连接都活着——连接状态没能按原样恢复，而是被自己的元数据查询
+反向"打开"了。
+
+现在的规则按"有没有活连接"分岔，而判活用的是 `engine.pool` 而不是 `acquire()`：
+
+| 情况 | 行为 |
+| --- | --- |
+| 已有活连接 | 走 SFTP 取**真实**属性（`stat` 仍能报出"远端已删除"） |
+| 无活连接，路径在已挂载根内 | `stat`/`lstat` 给出合成的目录 `Stats`；`realpath` 直接返回词法规范拼写 |
+| 无活连接，路径在挂载根外 | `ENOENT` |
+
+中间一行是刻意的：DSH 用这些探针判断**会话是否仍属于某个工作区**，在那里抛错（而不是
+明确 miss）会让 registry 把会话从记账里剪掉——卸载一个工作区不该顺手改写它的会话归属。
+合成答案只声称"是目录"，不谎报大小或时间戳；挂载那一刻插件已经确认过它确实是目录。
+
+回归测试在 `tests/probe-smoke.mjs`（15 项），断言直接数 `withSftp` / `acquire` 的调用
+次数：把判活改回 `acquire()` 后 6 条变红。
+
 
 `node:path` 的补丁覆盖默认导出与 `win32` / `posix` 命名空间（同一对象去重），
 卸载时逐项复原；非 `ssh://` 调用必须逐字节等价于原实现，这是该层的回归底线。
@@ -292,6 +320,14 @@ shell。接管后，`spec.cwd` 是 `ssh://` 就改开 SSH PTY 通道，返回满
 | keepalive | 15s | `engine.keepaliveIntervalMs` |
 | 空闲回收 | 30 分钟（sweeper 每 60s 扫一遍，有请求在飞不回收） | `engine.idleTimeoutMs` / `engine.sweepIntervalMs` |
 | 主机变更 | `forget(alias)` 丢弃旧连接，下次操作按新配置重连 | — |
+| 主动断开 | `hosts/disconnect` 先 `forwards.closeForAlias(alias)` 再 `forget(alias)`，响应 `closedForwards` 报告拆了几条隧道 | — |
+| 测试连接 | `test` 连一次即 `forget(alias)` 释放（被转发的 `holds` 钉住时不释放） | — |
+
+**连接与转发的方向性是单向的**，且两个方向都有测试守着：
+
+- 连接断 → 转发断（`closeForAlias`，显式拆除，不依赖 ssh2 的 `close` 事件）；
+- 转发断 → 连接**不**断（`#teardown` 只递减 `holds`，构造上无法关闭 client）；
+- 开转发时主机未连接 → 先连接（`open()` 首步 `engine.acquire()`）。
 
 原始 ssh2 / SFTP 失败会被映射为稳定的 `FsError` 错误码
 （`ENOENT` / `EACCES` / `EIO` 等），消费方只按码分支，不解析报错文本。
