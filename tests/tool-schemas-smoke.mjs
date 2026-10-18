@@ -18,6 +18,8 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
+import { skipWithoutRealPeers } from './support/peer-mode.mjs'
+
 const coreRoot = process.env.DSH_CORE_ROOT
 if (!coreRoot) {
   console.log('\n=== tool schemas smoke ===\n')
@@ -25,6 +27,10 @@ if (!coreRoot) {
   console.log('\n=== 0 passed, 0 failed, 1 suite skipped ===')
   process.exit(0)
 }
+// The whole point of this suite is the host's ENFORCED schema subset and its
+// argument validator; a stub that skips both would report a green suite that
+// verified nothing. Skip instead.
+skipWithoutRealPeers('tool schemas smoke', 'the real @deepseek-ai/dsh-tools (schema subset and argument validator)')
 process.env.DSH_PEER_ROOT = [coreRoot, process.env.DSH_PEER_ROOT].filter(Boolean).join(path.delimiter)
 
 const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')

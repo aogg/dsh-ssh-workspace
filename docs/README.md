@@ -16,6 +16,8 @@
 | [development.md](./development.md) | 开发、调试与发布：源码结构、依赖解析、打包流程 | 初稿 |
 | [troubleshooting.md](./troubleshooting.md) | 排查与常见问题：错误语义、连接问题、已知限制 | 初稿 |
 | [roadmap.md](./roadmap.md) | 功能路线图：候选功能、动机与验收（待办清单） | 初稿 |
+| [forward-persistence.md](./forward-persistence.md) | 端口转发的持久化：已存映射、开关语义、端口预检、启动自动开启 | 初稿 |
+| [unmount-modes.md](./unmount-modes.md) | 工作区卸载：保留 / 置灰 / 删除会话的可行性方案（未实施） | 方案 |
 | [optimization-plan.md](./optimization-plan.md) | 优化计划：安全扫描后的修复与工程优化分阶段实施清单（Phase 1–3 与 4.1 已实施；4.2 待单独一轮） | 初稿 |
 | [_template.md](./_template.md) | 新建文档用模板 | — |
 

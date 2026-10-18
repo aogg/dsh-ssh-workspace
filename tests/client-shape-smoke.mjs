@@ -80,6 +80,45 @@ check('lib/index.js exists', existsSync(path.join(packageRoot, 'lib/index.js')))
 check('lib/client.js is excluded from the host entry points',
   pkg.exports?.['.']?.default !== './lib/client.js', JSON.stringify(pkg.exports?.['.']))
 
+console.log('\n[five-row list cap]')
+// Each long list is a scrolling viewport, not a truncation: dropping rows
+// would hide a row's controls (a tunnel you cannot see is one you cannot turn
+// off). The three sections the cap applies to are pinned here, because losing
+// one of the wrappers silently brings back a panel that scrolls for pages.
+if (typeof clientRel === 'string' && existsSync(path.join(packageRoot, clientRel))) {
+  const client = readFileSync(path.join(packageRoot, clientRel), 'utf8')
+  check('LIST_CAP is 5', /const LIST_CAP = 5\b/.test(client))
+  check('CappedList is defined', /function CappedList \(/.test(client))
+  const capped = (client.match(/jsx\(CappedList, \{/g) ?? []).length
+  check('all three lists are capped (hosts, forwards, mounts)', capped === 3, `found ${capped} wrappers`)
+  check('the cap is measured, not assumed from a fixed row height',
+    /getBoundingClientRect\(\)\.height/.test(client) && !/LIST_CAP \* \d+px/.test(client))
+  check('a short list renders without a reserved scrollbar slot',
+    /\.sshwsp-cap \{[^}]*\}/.test(client) && !/\.sshwsp-cap \{[^}]*overflow-y/.test(client),
+    'an unconditional overflow-y reserves a gutter on lists that never scroll')
+  check('overflow scrolls only once capped', /\.sshwsp-cap-scroll \{[^}]*overflow-y: auto/.test(client))
+  check('capped rows drop their own bottom margin (flex does not collapse it)',
+    /\.sshwsp-cap > \.sshwsp-card, \.sshwsp-cap > \.sshwsp-mount \{ margin-bottom: 0; \}/.test(client))
+}
+
+console.log('\n[stylesheet covers the classes the bundle renders]')
+// A class can be rendered without ever being declared. That is invisible until
+// someone reads the DOM: the layout pass that added the list cap deleted the
+// `.sshwsp-empty` rule as collateral, and every empty / loading / error
+// placeholder silently lost its padding and centring. Nothing failed, because
+// no test compared what the bundle renders against what the sheet declares.
+// Each entry below is a class the panel depends on for MEANING, not decoration.
+if (typeof clientRel === 'string' && existsSync(path.join(packageRoot, clientRel))) {
+  const client = readFileSync(path.join(packageRoot, clientRel), 'utf8')
+  for (const className of ['sshwsp-empty', 'sshwsp-mount', 'sshwsp-mount-path', 'sshwsp-entry-meta', 'sshwsp-btn', 'sshwsp-input']) {
+    check(`.${className} is rendered and declared`,
+      client.includes(`'${className}'`) && new RegExp(`\\.${className}\\s*[,{]`).test(client),
+      'used in the UI but missing from the injected stylesheet')
+  }
+} else {
+  check('the client bundle is inspectable for declared classes', false, 'bundle missing')
+}
+
 console.log('\n[publish whitelist]')
 const files = pkg.files ?? []
 check('lib/ ships in the tarball', files.includes('lib/'), JSON.stringify(files))

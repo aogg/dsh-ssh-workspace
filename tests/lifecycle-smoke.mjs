@@ -16,6 +16,8 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
+import { skipWithoutRealPeers } from './support/peer-mode.mjs'
+
 const coreRoot = process.env.DSH_CORE_ROOT
 if (!coreRoot) {
   console.log('\n=== lifecycle smoke ===\n')
@@ -23,6 +25,9 @@ if (!coreRoot) {
   console.log('\n=== 0 passed, 0 failed, 1 suite skipped ===')
   process.exit(0)
 }
+// This suite drives the host's own framework (Cordis service ordering), so a
+// generated stub root cannot stand in for it: skip rather than crash.
+skipWithoutRealPeers('lifecycle smoke', 'a real assembled DSH tree (@deepseek-ai/cordis and dsh-fs)')
 // Let the plugin's own requirePeer find the same tree (see lib/peers.js).
 process.env.DSH_PEER_ROOT = [coreRoot, process.env.DSH_PEER_ROOT].filter(Boolean).join(path.delimiter)
 
@@ -45,8 +50,9 @@ const EXPECTED_TOOLS = [
 ]
 // Route paths the browser half must expose. Kept in step with ROUTES in
 // lib/routes.js: hosts, host save/delete/forget-key/disconnect, test, ls,
-// status, mount, unmount, forward, unforward, transfer, download, upload.
-const EXPECTED_ROUTES = 15
+// status, mount, unmount, forward, unforward, the six saved-forward routes
+// (save/toggle/delete/remember/probe/settings), transfer, download, upload.
+const EXPECTED_ROUTES = 21
 
 let failures = 0
 function check (label, ok, detail) {

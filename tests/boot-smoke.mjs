@@ -24,6 +24,8 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
+import { skipWithoutRealPeers } from './support/peer-mode.mjs'
+
 const coreRoot = process.env.DSH_CORE_ROOT
 if (!coreRoot) {
   console.log('\n=== boot smoke ===\n')
@@ -31,6 +33,9 @@ if (!coreRoot) {
   console.log('\n=== 0 passed, 0 failed, 1 suite skipped ===')
   process.exit(0)
 }
+// Booting a real Cordis application needs the host's own framework; a generated
+// stub root cannot stand in for it.
+skipWithoutRealPeers('boot smoke', 'a real assembled DSH tree (@deepseek-ai/cordis, dsh-fs and dsh-tools)')
 process.env.DSH_PEER_ROOT = [coreRoot, process.env.DSH_PEER_ROOT].filter(Boolean).join(path.delimiter)
 
 const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
