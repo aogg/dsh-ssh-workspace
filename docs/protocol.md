@@ -30,6 +30,13 @@ ssh://<主机别名>/<远端绝对路径>
 远端**写入**（writeText / editText / mkdir / 原子替换）只允许落在已挂载的
 远端工作区之内，越界返回 `FS_SANDBOX_DENIED`；**读取不受限**。
 
+这道围栏之外还有一道**独立的**围栏：被停用（`detach`）的工作区，其下**读写都拒**，
+同样返回 `FS_SANDBOX_DENIED`，文案带 `the remote workspace is detached`。
+两者判定时机不同——写入围栏问「这个路径在不在某个已挂载根之下」，
+停用围栏问「这个路径在不在某个被主动停用的根之下」，后者先于前者作答，
+且对 `ssh_workspace_exec` / 持久 shell / glob / grep / git / 传输一并生效
+（判据是 `engine.isDisabledTarget`）。详见 [unmount-modes.md](./unmount-modes.md)。
+
 ## 显示规则
 
 界面显示时，别名后插入一个 `@`：

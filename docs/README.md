@@ -1,27 +1,33 @@
 # dsh-ssh-workspace 文档
 
 [根 README](../README.md) 面向「快速了解、安装、能力概览」；本目录存放展开的
-专题文档。内容已从 README 迁移并对照源码展开，当前为初稿状态——如发现与实现
-不符之处，以源码为准并欢迎修订。
+专题文档。内容已从 README 迁移并对照源码展开，**数字与清单均按当前源码核对**
+（路由 22 条、Agent 工具 10 个、测试 23 个套件）。如发现与实现不符之处，
+以源码为准并欢迎修订。
 
 ## 目录
 
 | 文档 | 内容 | 状态 |
 | --- | --- | --- |
-| [architecture.md](./architecture.md) | 架构与实现要点：`ctx.fs` / `ctx.shell` / `ctx.subprocess` 接管、变更监视与流式读取、内建桥接、引擎与连接模型 | 初稿 |
-| [protocol.md](./protocol.md) | `ssh://` 路径协议：语法、规范化、显示规则、`file:` URI | 初稿 |
-| [hosts.md](./hosts.md) | 主机配置与认证：存储格式、`~/.ssh/config` 回退、面板管理 | 初稿 |
-| [tools.md](./tools.md) | Agent 工具参考：十个 `ssh_workspace_*` 工具 | 初稿 |
-| [ui.md](./ui.md) | 界面指南：面板、添加工作区双入口、远程工作区标记 | 初稿 |
-| [development.md](./development.md) | 开发、调试与发布：源码结构、依赖解析、打包流程 | 初稿 |
-| [troubleshooting.md](./troubleshooting.md) | 排查与常见问题：错误语义、连接问题、已知限制 | 初稿 |
-| [roadmap.md](./roadmap.md) | 功能路线图：候选功能、动机与验收（待办清单） | 初稿 |
-| [forward-persistence.md](./forward-persistence.md) | 端口转发的持久化：已存映射、开关语义、端口预检、启动自动开启 | 初稿 |
+| [features.md](./features.md) | 功能说明：按能力域列出的完整功能清单——每项写清做什么、怎么用、依赖什么、缺依赖时如何降级 | 完成 |
+| [architecture.md](./architecture.md) | 架构与实现要点：`ctx.fs` / `ctx.shell` / `ctx.subprocess` 接管、变更监视与流式读取、内建桥接、引擎与连接模型 | 完成 |
+| [protocol.md](./protocol.md) | `ssh://` 路径协议：语法、规范化、显示规则、`file:` URI、写入围栏与停用围栏 | 完成 |
+| [hosts.md](./hosts.md) | 主机配置与认证：存储格式、`~/.ssh/config` 回退、面板管理 | 完成 |
+| [tools.md](./tools.md) | Agent 工具参考：十个 `ssh_workspace_*` 工具 | 完成 |
+| [ui.md](./ui.md) | 界面指南：面板、添加工作区双入口、远程工作区标记、端口转发与持久会话区 | 完成 |
+| [forward-persistence.md](./forward-persistence.md) | 端口转发的持久化：已存映射、开关语义、端口预检、启动自动开启 | 完成 |
 | [unmount-modes.md](./unmount-modes.md) | 工作区卸载：停用、会话归档、全局停机围栏与一键启用 | 完成 |
-| [optimization-plan.md](./optimization-plan.md) | 优化计划：安全扫描后的修复与工程优化分阶段实施清单（Phase 1–3 与 4.1 已实施；4.2 待单独一轮） | 初稿 |
-| [_template.md](./_template.md) | 新建文档用模板 | — |
+| [development.md](./development.md) | 开发、调试与发布：源码结构、依赖解析、测试套件、打包流程 | 完成 |
+| [troubleshooting.md](./troubleshooting.md) | 排查与常见问题：错误语义、停用围栏、连接问题、已知限制 | 完成 |
 
-状态取值：骨架 = 结构与占位就位、内容待填；初稿 = 主要内容已成；完成 = 已校对。
+状态取值：初稿 = 主要内容已成；完成 = 已校对。
+
+## 阅读顺序
+
+- **想确认某功能有没有** → [features.md](./features.md)
+- **想用起来** → 根 README 的快速开始 → [ui.md](./ui.md) → [tools.md](./tools.md)
+- **想改代码** → [architecture.md](./architecture.md) → [development.md](./development.md)
+- **出问题了** → [troubleshooting.md](./troubleshooting.md)
 
 ## 写作约定
 
@@ -30,4 +36,4 @@
 - 结构：每页以「一句话定位」开头 → 概述 → 主题分节 → 「相关」链接。
 - 引用：代码位置写 `lib/xxx.js:行号`；跨页引用一律相对链接。
 - 图片：放在 `docs/assets/`，正文用 `./assets/<name>.png` 引用。
-- 新增页面：从 [_template.md](./_template.md) 拷贝，并在本索引登记（含状态列）。
+- 新增页面：写好后在本索引登记，并补进根 README 与 `README.en.md` 的文档索引。

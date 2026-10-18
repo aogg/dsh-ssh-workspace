@@ -102,7 +102,7 @@ DSH 的所有文件操作都走 `ctx.fs`（`@deepseek-ai/dsh-fs`）这一个服�
 2. **输入来源**：在插件管理界面的安装输入框中二选一，点击安装：
    - **npm 包**（走 npm 分发，支持锁定版本）：
      `@shiqyka/dsh-ssh-workspace`，或指定版本
-     `@shiqyka/dsh-ssh-workspace@0.1.24`
+     `@shiqyka/dsh-ssh-workspace@0.2.4`
      （[npm 页面](https://www.npmjs.com/package/@shiqyka/dsh-ssh-workspace)）；
    - **仓库地址**（从 Git 取最新代码）：
      `https://github.com/siqyka/dsh-ssh-workspace`
@@ -167,6 +167,8 @@ DSH 的所有文件操作都走 `ctx.fs`（`@deepseek-ai/dsh-fs`）这一个服�
 
 ## 能力一览
 
+> 完整的按域清单（含依赖、降级与边界）见 [docs/features.md](./docs/features.md)。
+
 ### 远端文件
 
 | 能力 | 说明 |
@@ -177,7 +179,7 @@ DSH 的所有文件操作都走 `ctx.fs`（`@deepseek-ai/dsh-fs`）这一个服�
 | 二进制与编码 | 文本读取拒绝 NUL / 非法 UTF-8；`readBytes` 原样返回字节 |
 | 写入围栏 | 远端写入只允许落在已挂载的远端工作区内，越界返回 `FS_SANDBOX_DENIED`；读取不受限制 |
 | 大文件流式读取 | 预览与 `read` 按块（256 KiB）流式读取，不再整文件进内存 |
-| 远端变更自动刷新 | 侧栏文件树与预览以轮询感知远端改动并自动刷新——基础约 2 秒一次，空闲目录自适应退避（连续 15 轮无变更退至 5 秒、30 轮至 10 秒封顶），任一变更立即回到 2 秒；SFTP 元数据无亚秒时间戳，同一秒内等长的连续改写可能不触发刷新，增、删、改名总能感知 |
+| 远端变更自动刷新 | 优先用远端 `inotifywait` 推送事件（即时、不受 mtime 精度限制）；未安装时回退到轮询——基础约 2 秒一次，空闲目录自适应退避（连续 15 轮无变更退至 5 秒、30 轮至 10 秒封顶），任一变更立即回到 2 秒；轮询路径下 SFTP 元数据无亚秒时间戳，同一秒内等长的连续改写可能不触发刷新，增、删、改名总能感知 |
 
 ### 远端执行
 
@@ -247,14 +249,16 @@ exec 通道；空闲 30 分钟回收（有操作在飞的连接不回收）。
 
 | 文档 | 内容 |
 | --- | --- |
+| [features.md](./docs/features.md) | **功能说明**：按能力域列出的完整功能清单（工作区 / 文件 / 执行 / 传输 / 转发 / 界面 / 安全 / 配置 / 降级矩阵 / 边界） |
 | [architecture.md](./docs/architecture.md) | 架构与实现：`ctx.fs` / `ctx.shell` / `ctx.subprocess` 接管、变更监视与流式读取、内建桥接、引擎与连接模型 |
-| [protocol.md](./docs/protocol.md) | `ssh://` 路径协议：语法、规范化、显示规则、`file:` URI |
+| [protocol.md](./docs/protocol.md) | `ssh://` 路径协议：语法、规范化、显示规则、`file:` URI、写入围栏与停用围栏 |
 | [hosts.md](./docs/hosts.md) | 主机配置与认证：存储格式、`~/.ssh/config` 回退、面板管理 |
 | [tools.md](./docs/tools.md) | Agent 工具参考：十个 `ssh_workspace_*` 工具 |
-| [ui.md](./docs/ui.md) | 界面指南：面板、添加工作区双入口、远程工作区标记 |
+| [ui.md](./docs/ui.md) | 界面指南：面板、添加工作区双入口、远程工作区标记、端口转发与持久会话区 |
+| [forward-persistence.md](./docs/forward-persistence.md) | 端口转发持久化：意图与事实的分离、两条断开路径的一致性、自动开启 |
+| [unmount-modes.md](./docs/unmount-modes.md) | 卸载的两种模式：`detach`（可逆）与 `deregister`、会话归档、停用围栏 |
 | [development.md](./docs/development.md) | 开发、调试与发布：源码结构、依赖解析、打包流程 |
 | [troubleshooting.md](./docs/troubleshooting.md) | 排查与常见问题：错误语义、连接问题、已知限制 |
-| [roadmap.md](./docs/roadmap.md) | 功能路线图：候选功能、动机与验收 |
 | [CHANGELOG.md](./CHANGELOG.md) | 更新日志：各版本的新增、修复与变更 |
 
 ---

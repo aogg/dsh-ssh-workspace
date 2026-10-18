@@ -109,7 +109,7 @@ same error semantics.
    click Install:
    - **npm package** (distributed via npm, version pinning supported):
      `@shiqyka/dsh-ssh-workspace`, or pin a version
-     `@shiqyka/dsh-ssh-workspace@0.1.24`
+     `@shiqyka/dsh-ssh-workspace@0.2.4`
      ([npm page](https://www.npmjs.com/package/@shiqyka/dsh-ssh-workspace));
    - **repository address** (latest code from Git):
      `https://github.com/siqyka/dsh-ssh-workspace`
@@ -179,6 +179,8 @@ become inaccessible since the host no longer exists.
 
 ## Capabilities
 
+> The complete inventory by domain (dependencies, degradation, limits included) is in [docs/features.md](./docs/features.md).
+
 ### Remote files
 
 | Capability | Details |
@@ -189,7 +191,7 @@ become inaccessible since the host no longer exists.
 | Binary and encoding | Text reads reject NUL / invalid UTF-8; `readBytes` returns raw bytes |
 | Write fence | Remote writes may only land inside a mounted remote workspace; anything outside returns `FS_SANDBOX_DENIED`. Reads are unrestricted |
 | Large files stream | Previews and `read` stream remote files in 256 KiB chunks instead of loading the whole file into memory |
-| Remote changes auto-refresh | The sidebar file tree and previews pick up remote changes by polling — about every 2 seconds, backing off while idle (after 15 quiet rounds to 5 s, after 30 to 10 s) and snapping back to 2 s on any change. SFTP metadata has no sub-second timestamps, so consecutive rewrites of equal size within the same second may not trigger a refresh; additions, removals, and renames always do |
+| Remote changes auto-refresh | Remote `inotifywait` push events are preferred (immediate, not bound by mtime precision); without it the plugin falls back to polling — about every 2 seconds, backing off while idle (after 15 quiet rounds to 5 s, after 30 to 10 s) and snapping back to 2 s on any change. On the polling path SFTP metadata has no sub-second timestamps, so consecutive rewrites of equal size within the same second may not trigger a refresh; additions, removals, and renames always do |
 
 ### Remote execution
 
@@ -271,14 +273,16 @@ Explicitly **not supported**:
 
 | Doc | Contents |
 | --- | --- |
+| [features.md](./docs/features.md) | **Feature reference**: the complete capability inventory by domain (workspaces / files / execution / transfer / forwarding / UI / security / config / degradation matrix / limits) |
 | [architecture.md](./docs/architecture.md) | Architecture & implementation: the `ctx.fs` / `ctx.shell` / `ctx.subprocess` takeovers, change watching & streaming, built-in bridges, engine & connection model |
-| [protocol.md](./docs/protocol.md) | The `ssh://` path protocol: syntax, normalization, display rules, `file:` URIs |
+| [protocol.md](./docs/protocol.md) | The `ssh://` path protocol: syntax, normalization, display rules, `file:` URIs, the write fence and the detached fence |
 | [hosts.md](./docs/hosts.md) | Host configuration & auth: storage format, `~/.ssh/config` fallback, panel management |
 | [tools.md](./docs/tools.md) | Agent tool reference: the ten `ssh_workspace_*` tools |
-| [ui.md](./docs/ui.md) | UI guide: the panel, the dual "Add workspace" entry, remote-workspace marks |
+| [ui.md](./docs/ui.md) | UI guide: the panel, the dual "Add workspace" entry, remote-workspace marks, the port-forward and persistent-shell sections |
+| [forward-persistence.md](./docs/forward-persistence.md) | Port-forward persistence: intent vs. fact, the two disconnect paths agreeing, auto-start |
+| [unmount-modes.md](./docs/unmount-modes.md) | The two unmount modes: `detach` (reversible) vs. `deregister`, session archiving, the disable fence |
 | [development.md](./docs/development.md) | Development, debugging & release: source layout, dependency resolution, packaging |
 | [troubleshooting.md](./docs/troubleshooting.md) | Troubleshooting & FAQ: error semantics, connection issues, known limitations |
-| [roadmap.md](./docs/roadmap.md) | Feature roadmap: candidates, motivations, acceptance criteria |
 | [CHANGELOG.md](./CHANGELOG.md) | Changelog: additions, fixes and changes per version |
 
 ---

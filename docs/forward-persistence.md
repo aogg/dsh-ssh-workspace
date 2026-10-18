@@ -146,7 +146,7 @@ settings.autoStart（UI 写入，运行时真相）
 
 | 方向 | 规则 | 实现 |
 | --- | --- | --- |
-| 连接断 → 转发断 | **必须** | `ForwardManager.closeForAlias(alias)`，由 `hosts/disconnect` 路由在 `engine.forget()` 之前调用 |
+| 连接断 → 转发断 | **必须** | 主动断开走 `SavedForwardManager.closeAlias(alias)`，由 `hosts/disconnect` 路由在 `engine.forget()` 之前调用；连接意外掉线由 `ForwardManager` 自拆 |
 | 转发断 → 连接断 | **绝不** | `#teardown` 只递减 `record.holds`，从不触碰 `client` |
 
 ### 连接断 → 转发断
@@ -160,7 +160,10 @@ settings.autoStart（UI 写入，运行时真相）
 所以 `hosts/disconnect` 路由**先**按 alias 显式拆掉转发，再 `engine.forget()`：
 
 ```js
-const closedForwards = forwards?.closeForAlias?.(alias, 'SSH connection closed') ?? 0
+// 有已存映射：逐条 closeById，与端口行「断开」同一条路径
+const closedForwards = savedForwards?.closeAlias?.(alias) ?? 0
+// 未装配 SavedForwardManager：回退到旧路径（那时没有「意图」可关）
+if (!savedForwards) forwards?.closeForAlias?.(alias, 'SSH connection closed')
 engine.forget(alias)
 ```
 
@@ -250,7 +253,7 @@ engine.forget(alias)
 
 ## 八、测试
 
-新增 `tests/forward-persist-smoke.mjs`，88 项断言，覆盖：
+新增 `tests/forward-persist-smoke.mjs`，102 项断言，覆盖：
 
 - store 分区的往返、原地更新、删除、与 `hosts` / `secrets` / 外来分区共存
 - 损坏条目的降级（缺 localPort、端口 0、缺 id 都丢弃，不抛错）
@@ -259,10 +262,11 @@ engine.forget(alias)
 - **占用端口被拒绝且不落盘**；保存后 bind 失败仍留痕
 - 自动开启：偏好关闭时不动、只开意图为开的、幂等、失败不抛错
 - 连接断开：标记非 live、保留意图、留下原因、重开清除原因
+- **主动断开主机与端口行「断开」逐字段一致**（`live` / `enabled` / `error` 三元组相同，见 §六）
 - `remember` 保留实际端口、不产生重复行
 - join 的意图/事实分离
 
-另有 `tests/forward-smoke.mjs`（21 项，既有）覆盖隧道本身。
+另有 `tests/forward-smoke.mjs`（34 项，既有）覆盖隧道本身。
 
 ---
 

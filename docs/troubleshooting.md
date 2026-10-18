@@ -18,6 +18,23 @@
 | `FS_NOT_REGULAR_FILE` / `FS_NOT_DIRECTORY` | 目标类型不符 | 对目录 read、对文件 listDir 等 |
 | `FS_IO_ERROR` | 其它 SFTP 失败 | SFTP 服务端报错、连接中断等 |
 
+### 一整个工作区都在报错？先看它是不是被停用了
+
+`ssh_workspace_unmount`（以及面板里的卸载）默认是 **`detach` 模式**：工作区记录和会话都保留，
+但该路径下的**一切**操作都会被拒绝——读写、列目录、变更监视、执行命令、开终端、glob / grep / git、传输，
+无一例外。这是停用造成的，**不是远端文件不存在**。
+
+判据是错误文案里带 `the remote workspace is detached`：
+
+```
+cannot access "ssh://myserver/home/user/project/src/app.ts": the remote workspace is detached
+(re-enable it in the panel or with ssh_workspace_enable)
+```
+
+恢复方式：面板点该行的「启用」，或调 `ssh_workspace_enable`（默认同时把归档的会话恢复出来）。
+只有 SSH 连接本身（`test`、目录浏览、端口转发）不受停用影响——这也是为什么「测试连接」还能成功却什么都读写不了：
+连接活着，围栏关着。
+
 ## 连接问题
 
 按以下顺序排查：

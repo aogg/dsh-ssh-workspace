@@ -324,11 +324,11 @@ if (detachedSet.has(path)) continue
 **正是那层围栏**，它会拒绝停用工作区内的任何读取，于是「启用」在结构上永远失败。
 两处都改为走原始连接（`engine.withSftp`）直接 `stat`，与 HTTP 路由的做法一致。
 
-`routes-smoke` 增加 22 项（模式默认值、`detach` 不归档而 `deregister` 归档、显式
-`archiveSessions` 优先于模式、归档成功/失败上报、`deregister: true` 兼容、启用流程、
-两条新路由的回环围栏），另加 3 项钉住 `/status` 必须下发 `sessionIds`：成员列表
-原样透传、强制转成字符串（会话行按文本匹配 id）、缺字段退化为空数组而不是
-`undefined`（旧宿主可能整个省略）。
+`routes-smoke` 现在 **118 项**（本组增加 22 项：模式默认值、`detach` 不归档而
+`deregister` 归档、显式 `archiveSessions` 优先于模式、归档成功/失败上报、
+`deregister: true` 兼容、启用流程、两条新路由的回环围栏），其中 3 项钉住 `/status`
+必须下发 `sessionIds`：成员列表原样透传、强制转成字符串（会话行按文本匹配 id）、
+缺字段退化为空数组而不是 `undefined`（旧宿主可能整个省略）。
 
 `client-shape-smoke` 另加一组**行为**测试，而不只是字符串匹配：它把真正的
 `collectRemoteWorkspaces` 抽出来运行，断言停用工作区的会话进入 `disabledSessionIds`、
@@ -351,8 +351,10 @@ if (detachedSet.has(path)) continue
 视野里）；且不得在行内另起一行重复同一句话。三条都反向验证过：放回旧文案后 2 条变红，
 把常驻行加回去后「not duplicated」变红。
 
-全套：`node tests/run.mjs` **23/23** 通过（含用真实 DSH 框架跑的
-lifecycle / boot / tool-schemas，共 160 项 schema 断言；新增的 `probe-smoke` 15 项）。
+全套：`node tests/run.mjs` **23/23** 通过。裸检出（无环境变量）下 18 个套件运行、
+合计 663 项断言；`lifecycle` / `boot` / `tool-schemas`（共 160 项 schema 断言）
+与 `live` / `acceptance` 共 5 个套件需要 `DSH_CORE_ROOT` 或真实主机，未提供时
+明确 SKIP。本组相关的 `probe-smoke` 15 项、`detach-smoke` 62 项。
 
 ---
 

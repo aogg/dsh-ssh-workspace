@@ -320,12 +320,13 @@ shell。接管后，`spec.cwd` 是 `ssh://` 就改开 SSH PTY 通道，返回满
 | keepalive | 15s | `engine.keepaliveIntervalMs` |
 | 空闲回收 | 30 分钟（sweeper 每 60s 扫一遍，有请求在飞不回收） | `engine.idleTimeoutMs` / `engine.sweepIntervalMs` |
 | 主机变更 | `forget(alias)` 丢弃旧连接，下次操作按新配置重连 | — |
-| 主动断开 | `hosts/disconnect` 先 `forwards.closeForAlias(alias)` 再 `forget(alias)`，响应 `closedForwards` 报告拆了几条隧道 | — |
+| 主动断开 | `hosts/disconnect` 先 `savedForwards.closeAlias(alias)`（逐条走 `closeById`，与端口行「断开」同一条路径）再 `forget(alias)`，响应 `closedForwards` 报告拆了几条隧道 | — |
 | 测试连接 | `test` 连一次即 `forget(alias)` 释放（被转发的 `holds` 钉住时不释放） | — |
 
 **连接与转发的方向性是单向的**，且两个方向都有测试守着：
 
-- 连接断 → 转发断（`closeForAlias`，显式拆除，不依赖 ssh2 的 `close` 事件）；
+- 连接断 → 转发断（显式拆除，不依赖 ssh2 的 `close` 事件；主动断开走
+  `savedForwards.closeAlias`，连接意外掉线才走 `ForwardManager.closeForAlias`）；
 - 转发断 → 连接**不**断（`#teardown` 只递减 `holds`，构造上无法关闭 client）；
 - 开转发时主机未连接 → 先连接（`open()` 首步 `engine.acquire()`）。
 

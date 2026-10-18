@@ -123,6 +123,38 @@ DSH 自己的 store 重新收集身份，而那个 store **不知道**本插件�
 已停用行的样式是 `opacity: .62` 加一个「已停用」小标签，**不使用
 `pointer-events: none`**：这一行存在的意义就是它的「启用」按钮。
 
+## 面板：主机与端口转发
+
+主机区每行一个 alias，右侧是「断开」；端口转发区列出**已存映射**与临时隧道，
+顶部有「启动时自动开启隧道」总开关。
+
+### 两条「断开」路径必须在面板上不可区分
+
+面板读的只有三个字段：`live`（是否真有 listener）、`enabled`（用户的意图）、
+`error`（是否需要解释）。两个入口都指向同一个关闭方法，所以三者逐字段相同：
+
+| 入口 | 走的路径 | `live` | `enabled` | `error` | 面板那一行 |
+| --- | --- | --- | --- | --- | --- |
+| 主机行的「断开」 | `savedForwards.closeAlias(alias)` → 逐条 `closeById` | `false` | `false` | 无 | 已断开 + 开启，**无红字** |
+| 端口行的「断开」 | `closeById(id)` | `false` | `false` | 无 | 同上 |
+| 连接意外掉线 | `ForwardManager.closeForAlias()` → `onClosed` | `false` | `true` | `"SSH connection closed"` | 已断开 + 开启 **+ 红字「连接已断开」** |
+
+第三行才是故障：连接断得不是时候，所以要保留意图（下次可一键恢复）并留下原因向用户
+解释。前两行是用户主动完成的动作，留下原因等于把成功的操作报成故障，后面还会跟着
+「启动时自动开启隧道」的暗示——而用户刚刚明确关掉了它。`forwards.lost`
+（「连接已断开」）只在 `error` 里含 `connection` 时渲染，因此主动断开后不会出现。
+
+主机行「断开」的 toast 在拆掉了隧道时报数：`hosts.disconnectOkForwards`
+（「已断开连接，同时关闭 {n} 条端口转发」），`n` 来自响应的 `closedForwards`；
+没有隧道时用 `hosts.disconnectOk`。
+
+### 面板：持久远端会话
+
+`status.shells` 非空时才出现「持久远端会话」一区，每行 `alias [session]` + 状态
+（`存活` / `已结束`）。它是一个**只读**列表——这一区不提供开关或关闭按钮，
+因为会话的生命周期归 agent 的 `ssh_workspace_shell` 管（同一 `alias` 可并存多个
+命名会话）。空列表**整区不渲染**，避免暗示面板拥有一个它并不拥有的控制项。
+
 ## 路径的展示拼写
 
 两处纯展示的替换，把 `ssh://alias/path` 显示为 `ssh://alias@/path`（读起来像 SSH 地址）：
