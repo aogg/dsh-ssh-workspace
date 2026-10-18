@@ -234,15 +234,40 @@ try {
 
   // --- the write fence -----------------------------------------------------
   console.log('\n[write fence]')
+  // `FS_OUTSIDE_WORKSPACE`, not `FS_SANDBOX_DENIED`: see remote-fs.js. A sandbox
+  // denial is rewritten by the host's tool layer into a mode marker plus an
+  // escalation hint, and escalating a permission never mounts a directory.
   let fenceCode
   try {
     await router.writeText(target('/tmp/dsh-ssh-workspace-outside.txt'), 'nope', undefined, undefined, undefined)
   } catch (error) {
     fenceCode = error.code
   }
-  check('writing outside every mounted root is refused', fenceCode === 'FS_SANDBOX_DENIED', String(fenceCode))
+  check('writing outside every mounted root is refused', fenceCode === 'FS_OUTSIDE_WORKSPACE', String(fenceCode))
   const stillReadable = await router.stat(target('/tmp'), undefined)
   check('reads outside the fence remain available', stillReadable?.type === 'directory', JSON.stringify(stillReadable))
+
+  // --- the sandbox mode on a real remote target ----------------------------
+  console.log('\n[sandbox mode]')
+  let readOnlyDenied
+  try {
+    await router.writeText(target(`${sandbox}/mode-fence.txt`), 'nope', undefined, undefined, { mode: 'read-only' })
+  } catch (error) {
+    readOnlyDenied = error
+  }
+  check('read-only refuses a remote write inside a mounted root',
+    readOnlyDenied?.code === 'FS_SANDBOX_DENIED', String(readOnlyDenied?.code))
+  check('the refusal names the mode', /read-only/u.test(readOnlyDenied?.message ?? ''), String(readOnlyDenied?.message))
+  let editDenied
+  try {
+    await router.editText(target(`${sandbox}/mode-fence.txt`), { oldString: 'nope', newString: 'x' }, undefined, undefined, { mode: 'read-only' })
+  } catch (error) {
+    editDenied = error
+  }
+  check('editText takes the policy as its fifth argument',
+    editDenied?.code === 'FS_SANDBOX_DENIED', String(editDenied?.code))
+  const modeWritten = await router.writeText(target(`${sandbox}/mode-fence.txt`), 'ok\n', undefined, undefined, { mode: 'workspace-write' })
+  check('workspace-write writes inside a mounted root', modeWritten?.operation !== undefined, JSON.stringify(modeWritten))
 
   // --- errors --------------------------------------------------------------
   console.log('\n[error taxonomy]')

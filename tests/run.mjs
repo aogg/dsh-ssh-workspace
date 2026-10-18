@@ -51,6 +51,7 @@ const SUITES = [
   'phase6',
   'store-lock',
   'transfer',
+  'mode-gate',
   'shell',
   'terminal',
   'transport',

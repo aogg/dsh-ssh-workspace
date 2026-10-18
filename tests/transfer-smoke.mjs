@@ -239,6 +239,122 @@ try {
     check('a tree upload recreates nested paths', files.has('/srv/tree/nested/b.txt'),
       JSON.stringify([...files.keys()]))
   }
+
+  // --- the upload tool answers to the session's sandbox mode ---------------
+  //
+  // `ssh_workspace_transfer` does not travel through `ctx.fs`, so the router's
+  // mode gate never sees it. Without its own check, a `read-only` session could
+  // upload a file while `write` was refused — the same hole, one tool over.
+  // It must resolve the policy from the calling agent's session itself.
+  {
+    const { workspaceTools } = await import(pathToFileURL(path.join(pluginRoot, 'lib/tools.js')).href)
+    const modeOf = { current: undefined }
+    /** A policy service whose mode the test drives. */
+    const policyCtx = {
+      get (name) {
+        if (name === 'sandboxPolicy') return { resolve: () => ({ mode: modeOf.current, workspaceRoot: '/local/root' }) }
+        return undefined
+      },
+    }
+    /** An engine whose SFTP double is fresh per call. */
+    const uploadEngine = () => {
+      const { sftp } = fakeSftp({ dirs: ['/srv', '/srv/app'] })
+      return { ...fakeEngine(sftp), assertNotDisabled () {} }
+    }
+    const toolOf = (context) => workspaceTools(context, uploadEngine(), undefined, undefined, undefined)
+      .find(tool => tool.name === 'ssh_workspace_transfer')
+
+    const transfer = toolOf(policyCtx)
+    check('the transfer tool is registered', transfer !== undefined)
+
+    const source = path.join(scratch, 'tree', 'a.txt')
+    const call = (direction, context = policyCtx) => toolOf(context).execute(
+      { alias: 'test', direction, localPath: source, remotePath: '/srv/app/up.txt' },
+      { agent: { session: { id: 's1' } } },
+    )
+
+    modeOf.current = 'read-only'
+    const denied = await call('upload')
+    check('a read-only session cannot upload', denied.ok === false, JSON.stringify(denied))
+    check('the upload refusal names the mode', /read-only/u.test(denied.error ?? ''), String(denied.error))
+
+    modeOf.current = 'workspace-write'
+    const allowed = await call('upload')
+    check('workspace-write still uploads', allowed.ok === true, JSON.stringify(allowed))
+
+    // A deployment without a sandbox policy must behave as it always did: no
+    // policy service at all is "unconfined", not "read-only".
+    modeOf.current = undefined
+    const unconfinedResult = await call('upload', { get: () => undefined })
+    check('no policy service means unconfined, not read-only', unconfinedResult.ok === true, JSON.stringify(unconfinedResult))
+
+    // A policy that cannot resolve fails CLOSED for a mutation gate: a refused
+    // upload is retryable, while writing during "view only" is not detectable.
+    const brokenCtx = { get: (name) => name === 'sandboxPolicy' ? { resolve: () => { throw new Error('boom') } } : undefined }
+    const brokenResult = await call('upload', brokenCtx)
+    check('an unresolvable policy refuses the upload rather than guessing', brokenResult.ok === false, JSON.stringify(brokenResult))
+
+    // An UPLOAD answers to the same workspace SCOPE rule as write / edit. The two
+    // are separate implementations — the tool resolves the policy itself while the
+    // router gets it as the fifth argument — so a drift between them would let an
+    // upload land exactly where a write is refused.
+    {
+      const scopedEngine = () => {
+        const { sftp } = fakeSftp({ dirs: ['/srv', '/srv/app', '/srv/other'] })
+        return { ...fakeEngine(sftp), assertNotDisabled () {} }
+      }
+      const scopedCtx = (root) => ({
+        get (name) {
+          if (name === 'sandboxPolicy') return { resolve: () => ({ mode: 'workspace-write', workspaceRoot: root }) }
+          return undefined
+        },
+      })
+      const scopedTool = (context) => workspaceTools(context, scopedEngine(), undefined, undefined, undefined)
+        .find(tool => tool.name === 'ssh_workspace_transfer')
+
+      // Inside the session workspace: allowed.
+      modeOf.current = 'workspace-write'
+      const inside = await scopedTool(scopedCtx('ssh://test/srv/app')).execute(
+        { alias: 'test', direction: 'upload', localPath: source, remotePath: '/srv/app/up.txt' },
+        { agent: { session: { id: 's1' } } },
+      )
+      check('workspace-write uploads inside the session workspace', inside.ok === true, JSON.stringify(inside))
+
+      // A sibling directory on the same host, mounted but outside the workspace.
+      const outside = await scopedTool(scopedCtx('ssh://test/srv/app')).execute(
+        { alias: 'test', direction: 'upload', localPath: source, remotePath: '/srv/other/up.txt' },
+        { agent: { session: { id: 's1' } } },
+      )
+      check('workspace-write refuses an upload outside the session workspace', outside.ok === false, JSON.stringify(outside))
+      check('the scope refusal names the workspace',
+        /ssh:\/\/test\/srv\/app/u.test(outside.error ?? ''), String(outside.error))
+
+      // danger-full-access is not scope-checked: that IS the documented way out.
+      const fullCtx = {
+        get (name) {
+          if (name === 'sandboxPolicy') return { resolve: () => ({ mode: 'danger-full-access', workspaceRoot: 'ssh://test/srv/app' }) }
+          return undefined
+        },
+      }
+      const full = await scopedTool(fullCtx).execute(
+        { alias: 'test', direction: 'upload', localPath: source, remotePath: '/srv/other/up.txt' },
+        { agent: { session: { id: 's1' } } },
+      )
+      check('danger-full-access uploads outside the session workspace', full.ok === true, JSON.stringify(full))
+    }
+
+    // A DOWNLOAD is not gated: it reads the remote side and writes locally, so
+    // "view only" is exactly the mode where it should keep working.
+    const downloadSftp = fakeSftp({ dirs: ['/srv', '/srv/app'], files: [['/srv/app/down.txt', new Uint8Array(Buffer.from('x'))]] })
+    const downloadTool = workspaceTools(policyCtx, { ...fakeEngine(downloadSftp.sftp), assertNotDisabled () {} }, undefined, undefined, undefined)
+      .find(tool => tool.name === 'ssh_workspace_transfer')
+    modeOf.current = 'read-only'
+    const downloadResult = await downloadTool.execute(
+      { alias: 'test', direction: 'download', localPath: path.join(scratch, 'down.txt'), remotePath: '/srv/app/down.txt' },
+      { agent: { session: { id: 's1' } } },
+    )
+    check('read-only still allows a download', downloadResult.ok === true, JSON.stringify(downloadResult))
+  }
 } finally {
   await rm(scratch, { recursive: true, force: true })
 }

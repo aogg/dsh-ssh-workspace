@@ -142,14 +142,59 @@ check('editText applies a literal edit remotely', edited.after.includes('BETA'),
 const listing = await fs.listDir({ targetKey: `ssh://${alias}${sandbox}/notes`, displayPath: `ssh://${alias}${sandbox}/notes` }, undefined)
 check('listDir lists the remote directory', listing.some(entry => entry.name === 'hello.txt'), JSON.stringify(listing.map(e => e.name)))
 
-// --- the sandbox fence still applies on the remote side ----------------------
+// --- the mounted-root fence still applies on the remote side -----------------
+// The code is `FS_OUTSIDE_WORKSPACE`, NOT `FS_SANDBOX_DENIED`: the host's tool
+// layer rewrites every sandbox denial into a mode-named marker plus an escalation
+// hint, which would be wrong here twice over — the mode may already be the
+// widest one, and no permission change mounts a directory.
 let fenceCode
 try {
   await fs.writeText(remote('/tmp/dsh-ssh-workspace-acceptance-outside.txt'), 'nope', undefined, undefined, undefined)
 } catch (error) {
   fenceCode = error.code
 }
-check('a remote write outside every mounted root is refused', fenceCode === 'FS_SANDBOX_DENIED', String(fenceCode))
+check('a remote write outside every mounted root is refused', fenceCode === 'FS_OUTSIDE_WORKSPACE', String(fenceCode))
+
+// The sandbox MODE must be honoured on a remote target, both ways round: the
+// deployment's sandbox is a local mechanism and a remote target never reaches
+// `SandboxedFileSystem.checkedTarget`, so the router applies it itself.
+{
+  // INSIDE the mounted root (`${sandbox}`), which is the whole point: a target
+  // outside it would be refused by the mount fence and prove nothing about mode.
+  const inside = remote(`${sandbox}/notes/mode-fence.txt`)
+  const detached = { mode: 'read-only' }
+  let denied
+  try {
+    await fs.writeText(inside, 'nope', undefined, undefined, detached)
+  } catch (error) {
+    denied = error
+  }
+  check('read-only is refused for a remote write INSIDE a mounted root',
+    denied?.code === 'FS_SANDBOX_DENIED', String(denied?.code))
+  check('the read-only refusal names the mode',
+    typeof denied?.message === 'string' && /read-only/u.test(denied.message), String(denied?.message))
+
+  let editDenied
+  try {
+    await fs.editText(inside, { oldString: 'a', newString: 'b' }, undefined, undefined, detached)
+  } catch (error) {
+    editDenied = error
+  }
+  check('editText honours read-only through its FIFTH argument',
+    editDenied?.code === 'FS_SANDBOX_DENIED', String(editDenied?.code))
+
+  // workspace-write allows a mounted root on the other side of the fence: the
+  // mounted-root test IS the containment test for a remote target, because the
+  // local workspace root is a path on this machine.
+  const allowed = await fs.writeText(inside, 'allowed\n', undefined, undefined, { mode: 'workspace-write' })
+  check('workspace-write still writes inside a mounted root', allowed?.operation === 'create' || allowed?.operation === 'update', JSON.stringify(allowed))
+
+  // An absent policy falls back to the backend's advertised default rather than
+  // reading as "unconfined". The stub advertises `workspace-write`, so this must
+  // NOT deny.
+  const noPolicy = await fs.writeText(inside, 'again\n', undefined, undefined, undefined)
+  check('an absent policy falls back to the backend default', noPolicy?.operation !== undefined, JSON.stringify(noPolicy))
+}
 
 // ...but local behaviour is untouched, which is the whole point of the patch.
 const localRead = await fs.readText({ targetKey: 'local:x', displayPath: 'E:/local/file.txt' }, undefined)

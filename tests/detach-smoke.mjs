@@ -283,5 +283,121 @@ const { formatRemotePath, isInsideAnyRemoteWorkspace } = await import(pathToFile
   check('enabling a detached workspace succeeds', enable.ok === true, JSON.stringify(enable))
 }
 
+// ---------------------------------------------------------------------------
+// The sandbox mode fence: a remote write must honour read-only
+// ---------------------------------------------------------------------------
+//
+// The deployment's sandbox is enforced inside `SandboxedFileSystem`, a LOCAL
+// implementation whose `checkedTarget` realpaths the target on this machine. A
+// remote target never reaches it — the router answers — so if the router ignores
+// the per-call policy, a `read-only` session silently rewrites files on the
+// remote host. No error, no marker: the model cannot tell it happened.
+//
+// Every assertion below proves the refusal happens BEFORE any SFTP work, which
+// is what makes it a policy answer rather than a failed connection: `withSftp`
+// records that it was reached.
+{
+  const engine = new SshWorkspaceEngine({})
+  let reachedSftp = 0
+  engine.withSftp = async () => {
+    reachedSftp += 1
+    throw new Error('the mode fence let a write reach SFTP')
+  }
+  // The nearby backend advertises the deployment default, exactly as
+  // `SandboxedFileSystem.sandboxMode` does.
+  const base = { sandboxMode: 'workspace-write', writeText: async () => ({ operation: 'local' }), editText: async () => ({}) }
+  const router = new RemoteFileSystem({ engine, base })
+  const workspace = formatRemotePath('alpha', '/home/dev/proj')
+  router.addRoot('alpha', '/home/dev/proj')
+  const target = { targetKey: `${workspace}/src/a.js`, displayPath: `${workspace}/src/a.js` }
+
+  const codeOf = async (run) => {
+    try {
+      await run()
+      return undefined
+    } catch (error) {
+      return error?.code
+    }
+  }
+
+  // read-only denies a target INSIDE a mounted root: this is the case the mount
+  // fence alone can never catch, so it is the one that proves the mode is read.
+  const readOnlyWrite = await codeOf(() => router.writeText(target, 'x', undefined, undefined, { mode: 'read-only' }))
+  check('read-only refuses a write inside a mounted root', readOnlyWrite === 'FS_SANDBOX_DENIED', String(readOnlyWrite))
+  const readOnlyEdit = await codeOf(() => router.editText(target, { oldString: 'a', newString: 'b' }, undefined, undefined, { mode: 'read-only' }))
+  check('read-only refuses an edit inside a mounted root', readOnlyEdit === 'FS_SANDBOX_DENIED', String(readOnlyEdit))
+  check('neither refusal reached SFTP', reachedSftp === 0, `withSftp called ${reachedSftp} time(s)`)
+
+  // The message names the mode, because the host's tool layer turns the code
+  // into a marker and the user reads the message.
+  let message = ''
+  try {
+    await router.writeText(target, 'x', undefined, undefined, { mode: 'read-only' })
+  } catch (error) {
+    message = error instanceof Error ? error.message : String(error)
+  }
+  check('the read-only refusal names the mode', /read-only/u.test(message), message)
+
+  // An ABSENT policy falls back to the backend's advertised default — not to
+  // "unconfined". The default here is workspace-write, so this must pass the
+  // mode check and be stopped by the MOUNT fence instead.
+  const noPolicy = await codeOf(() => router.writeText(target, 'x', undefined, undefined, undefined))
+  check('an absent policy uses the backend default, not "allow"',
+    noPolicy === undefined || noPolicy === 'FS_IO_ERROR', String(noPolicy))
+  check('the absent-policy write was allowed past the mode fence', reachedSftp === 1, `withSftp called ${reachedSftp} time(s)`)
+
+  // A backend that advertises read-only as its default denies even without a
+  // per-call policy: that is the deployment-level posture, and ignoring it would
+  // mean a `read-only` deployment can write to every mounted remote host.
+  const readOnlyBase = { sandboxMode: 'read-only', writeText: async () => ({}), editText: async () => ({}) }
+  const readOnlyRouter = new RemoteFileSystem({ engine, base: readOnlyBase })
+  readOnlyRouter.addRoot('alpha', '/home/dev/proj')
+  const inherited = await codeOf(() => readOnlyRouter.writeText(target, 'x', undefined, undefined, undefined))
+  check('the backend default of read-only is inherited', inherited === 'FS_SANDBOX_DENIED', String(inherited))
+
+  // danger-full-access writes are still fenced by the MOUNT rule: permission and
+  // reachability are independent, and a full-access session cannot write into a
+  // directory this deployment does not serve.
+  const outside = { targetKey: 'ssh://alpha/tmp/scratch.txt', displayPath: 'ssh://alpha/tmp/scratch.txt' }
+  const fullAccess = await codeOf(() => router.writeText(outside, 'x', undefined, undefined, { mode: 'danger-full-access' }))
+  check('danger-full-access is still refused outside every mounted root',
+    fullAccess === 'FS_OUTSIDE_WORKSPACE', String(fullAccess))
+}
+
+// ---------------------------------------------------------------------------
+// The fence codes must stay distinguishable
+// ---------------------------------------------------------------------------
+//
+// The host's tool layer rewrites EVERY `FS_SANDBOX_DENIED` into
+// "[sandbox: file access denied under <mode> mode]" plus an escalation hint.
+// Mount and detach failures must not wear that code: the mode may already be the
+// widest one, and no permission change mounts a directory or re-enables a
+// workspace. Distinct codes are what let the accurate message reach the model.
+{
+  const engine = new SshWorkspaceEngine({})
+  engine.withSftp = async () => { throw new Error('reached SFTP') }
+  const router = new RemoteFileSystem({ engine })
+  const workspace = formatRemotePath('alpha', '/home/dev/proj')
+
+  let mountCode
+  try {
+    await router.writeText({ targetKey: 'ssh://alpha/tmp/x.txt', displayPath: 'ssh://alpha/tmp/x.txt' }, 'x')
+  } catch (error) {
+    mountCode = error?.code
+  }
+  check('the mount fence raises its own code', mountCode === 'FS_OUTSIDE_WORKSPACE', String(mountCode))
+
+  router.addRoot('alpha', '/home/dev/proj')
+  router.disableRoot(workspace)
+  let detachCode
+  try {
+    await router.readText({ targetKey: `${workspace}/a.js`, displayPath: `${workspace}/a.js` })
+  } catch (error) {
+    detachCode = error?.code
+  }
+  check('the detach fence raises a permission code, not a sandbox one',
+    detachCode === 'FS_PERMISSION_DENIED', String(detachCode))
+}
+
 console.log(`\n=== ${passed} passed, ${failures} failed ===`)
 process.exit(failures === 0 ? 0 : 1)
