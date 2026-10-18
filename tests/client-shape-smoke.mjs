@@ -134,9 +134,17 @@ if (typeof clientRel === 'string' && existsSync(path.join(packageRoot, clientRel
   check('...and the selector is generic, because those buttons belong to DSH',
     client.includes('[data-sshwsp-disabled="1"] button'),
     'naming our own class here would miss the sidebar row entirely')
-  check('...while the row itself stays clickable, so its sessions are reachable',
-    !/\[data-sshwsp-disabled="1"\]\s*\{[^}]*pointer-events:\s*none/.test(client),
-    'disabling the row would hide the sessions that detach deliberately keeps')
+  // The workspace HEADER must stay clickable: expanding it is how the sessions
+  // a `detach` deliberately keeps stay reachable. Its own rule must therefore
+  // not carry pointer-events. The session rows inside it are the opposite case
+  // — the row IS the control that opens the session — and they are scoped by
+  // the row key so the two can never be confused for one another.
+  check('...while the workspace header itself stays clickable, so its group expands',
+    !/(^|,)\s*\[data-sshwsp-disabled="1"\]\s*\{[^}]*pointer-events:\s*none/m.test(client),
+    'disabling the header would hide which sessions the detach kept')
+  check('...but a detached workspace\'s session rows are fully unreachable',
+    /\[data-row-key\^="session:"\]\[data-sshwsp-disabled="1"\]\s*\{[^}]*pointer-events:\s*none/.test(client),
+    'the row is the control that opens the session; dimming only its buttons leaves that action live')
 
   // CSS alone is not enough: `pointer-events: none` blocks the mouse but a row
   // reached with Tab still fires its actions on Enter. The keyboard path needs
@@ -148,6 +156,97 @@ if (typeof clientRel === 'string' && existsSync(path.join(packageRoot, clientRel
   check('the undo remembers what it overwrote',
     client.includes('sshwspInertPrior') && /if \(was === null\) control\.removeAttribute\(name\)/.test(client),
     'blindly removing attributes would delete values DSH set itself')
+}
+
+console.log('\n[detached workspaces mark their sessions, not just their header]')
+// A row keyed `session:<id>` carries no workspace at all, so the membership has
+// to be resolved while the workspace is in hand. Greying only the group header
+// leaves every session under it a live, clickable session whose workspace I/O
+// fence is shut — the exact state the user reports as "sessions aren't greyed".
+// This runs the real collector rather than grepping for a string, because the
+// bug was a missing assignment, not a missing name.
+if (typeof clientRel === 'string' && existsSync(path.join(packageRoot, clientRel))) {
+  const client = readFileSync(path.join(packageRoot, clientRel), 'utf8')
+  const start = client.indexOf('function collectRemoteWorkspaces')
+  const end = client.indexOf('/** Update the mark source', start)
+  check('the collector is extractable for a behaviour test', start !== -1 && end > start, 'collector not found')
+  if (start !== -1 && end > start) {
+    const sandbox = { remoteMarks: {}, knownDisabledPaths: new Set() }
+    const factory = new Function('remoteMarks', 'knownDisabledPaths',
+      `${client.slice(start, end)}; return collectRemoteWorkspaces;`)
+    const collect = factory(sandbox.remoteMarks, sandbox.knownDisabledPaths)
+    collect([
+      { id: 'ws-off', path: 'ssh://box/srv/off', title: 'off', sessionIds: ['s1', 's2'] },
+      { id: 'ws-on', path: 'ssh://box/srv/on', title: 'on', sessionIds: ['s3'] },
+      { id: 'ws-bare', path: 'ssh://box/srv/bare', title: 'bare' },
+    ], ['ssh://box/srv/off'])
+    check('a detached workspace\'s sessions are collected as disabled',
+      JSON.stringify([...sandbox.remoteMarks.disabledSessionIds].sort()) === JSON.stringify(['s1', 's2']),
+      JSON.stringify([...sandbox.remoteMarks.disabledSessionIds]))
+    check('...a served workspace\'s sessions are not',
+      !sandbox.remoteMarks.disabledSessionIds.has('s3'),
+      'greyed a session whose workspace is still mounted')
+    check('...and a workspace without a membership list does not throw',
+      sandbox.remoteMarks.disabledSessionIds instanceof Set,
+      'an older host may omit sessionIds entirely')
+  }
+}
+
+console.log('\n[the unmount hint states BOTH outcomes, and only in the tooltip]')
+// The two unmount modes have opposite consequences, so the hint has to name both
+// rather than reassure about one: "the record and its sessions are kept" is true
+// only while the checkbox is clear, and a user who ticks it and reads that line
+// has been told the opposite of what will happen. It also lives in the tooltip
+// alone — an always-on line under the row would have to be rewritten as the
+// checkbox flips, and a second copy of the same sentence drifts from the first.
+if (typeof clientRel === 'string' && existsSync(path.join(packageRoot, clientRel))) {
+  const client = readFileSync(path.join(packageRoot, clientRel), 'utf8')
+  const hints = [...client.matchAll(/'mounted\.detachHint': '([^']*)'/g)].map(match => match[1])
+  const [zhHint = '', enHint = ''] = hints
+  check('both locales define the unmount hint', hints.length === 2, `${hints.length} definition(s)`)
+  check('the unmount hint names what happens WITHOUT the checkbox',
+    /未勾选/.test(zhHint) && /保留/.test(zhHint),
+    zhHint)
+  check('...and what happens WITH it',
+    /勾选/.test(zhHint) && /归档/.test(zhHint),
+    zhHint)
+  // The English hint is asserted on its own text, not on the bundle at large:
+  // "archived" appears in unrelated keys, so a bundle-wide regex would pass even
+  // if this one hint still described only the reversible branch.
+  check('...in English too, so the two locales cannot diverge in meaning',
+    /without/i.test(enHint) && /archived/i.test(enHint) && /deleted/i.test(enHint),
+    enHint)
+  check('the hint is carried by the unmount button',
+    /title: t\('mounted\.detachHint'\),\s*\n\s*onClick: \(\) => \{ setUnmountConfirm\(wsPath\)/
+      .test(client),
+    'the button that starts the flow lost its explanation')
+  check('...and by the confirm button, which replaces it once armed',
+    /title: t\('mounted\.detachHint'\),\s*\n\s*onClick: \(\) => handleUnmount\(wsPath, unmountMode\)/
+      .test(client),
+    'the tooltip vanishes at the exact moment the click becomes irreversible')
+  check('the hint is not duplicated as a standing line in the row',
+    !/sshwsp-entry-meta', children: t\('mounted\.detachHint'\)/.test(client),
+    'a second copy of the same sentence drifts from the tooltip')
+}
+
+console.log('\n[the bundles parse]')
+// Every other check in this file reads the bundle as TEXT, so a file that does
+// not even parse still passes them all: the string it greps for is present in a
+// broken file just as readily. That happened for real — a stray backtick inside
+// a CSS template literal ended the literal early and the whole client bundle
+// became a syntax error, while this suite reported against it successfully.
+// `node --check` is a parse, not an execution, so it stays dependency-free.
+{
+  const { spawnSync } = await import('node:child_process')
+  const targets = [pkg.main, clientRel, pkg.dsh?.bundle?.patch]
+    .filter(entry => typeof entry === 'string' && entry.endsWith('.js'))
+  for (const target of targets) {
+    const file = path.join(packageRoot, target)
+    if (!existsSync(file)) continue
+    const result = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' })
+    check(`${target} parses`, result.status === 0,
+      (result.stderr ?? '').split('\n').find(line => line.trim() !== '') ?? `exit ${result.status}`)
+  }
 }
 
 console.log('\n[publish whitelist]')

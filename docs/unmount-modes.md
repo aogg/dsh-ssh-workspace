@@ -204,21 +204,46 @@ if (detached) row.setAttribute('data-sshwsp-disabled', '1')
 else if (row.hasAttribute('data-sshwsp-disabled')) row.removeAttribute('data-sshwsp-disabled')
 ```
 
-配套 CSS 只做视觉：
+**会话行也必须一起标记**，这是曾经漏掉的一半。会话行是
+`[data-row-key^="session:<id>"]`，**它不携带任何工作区信息**——只有会话 id。
+所以成员关系必须在还持有工作区时解析：
 
-```css
-[data-sshwsp-disabled="1"] { opacity: 0.5; }
-[data-sshwsp-disabled="1"]::after { content: "⏻"; ... }
+```js
+for (const sessionId of Array.isArray(item.sessionIds) ? item.sessionIds : []) {
+  disabledSessionIds.add(String(sessionId))
+}
 ```
 
-**不拦点击**。拦截 DSH 自己的行点击处理器属于和宿主抢控制权，它一改版就崩。
-点击仍然会打开那个工作区，然后得到一个明确的「工作区已停用」错误——比一个
-神秘失效的按钮好。真正的入口是插件面板里的「启用」按钮。
+服务端 `/status` 因此必须带 `sessionIds`（`lib/routes.js`），否则客户端拿到的工作区
+条目没有成员列表，只能把标题那一行置灰，而它下面的每个会话仍然完全可点——工作区
+的 I/O 围栏已关，会话却是活的，这是最糟的组合。
+
+配套 CSS 分两层，作用域按行键区分：
+
+```css
+/* 通用层：任何被标记的行都变暗 */
+[data-sshwsp-disabled="1"] { opacity: 0.5; }
+/* 电源图标只给工作区标题：给每行会话都盖一个，读起来像"N 个开关" */
+[data-row-key^="workspace:"][data-sshwsp-disabled="1"]::after { content: "⏻"; ... }
+/* 工作区标题的按钮失效，但标题本身仍可点 */
+[data-sshwsp-disabled="1"] button,
+[data-sshwsp-disabled="1"] [role="button"] { pointer-events: none; opacity: 0.4; }
+/* 会话行整行不可达：行本身就是"打开会话"那个控件 */
+[data-row-key^="session:"][data-sshwsp-disabled="1"] { pointer-events: none; cursor: not-allowed; }
+```
+
+**工作区标题不拦点击**。拦截 DSH 自己的行点击处理器属于和宿主抢控制权，它一改版就崩。
+展开标题仍然可用——那是用户看清「停用保留了哪些会话」的唯一途径。真正的入口是插件
+面板里的「启用」按钮。
+
+**会话行整行拦**，因为这里的情况不同：行本身就是点击目标，只把里面的按钮置灰会把
+唯一要紧的动作留着。键盘路径由 `setElementInert()` 补上（`pointer-events` 只挡鼠标）。
 
 身份匹配需要 id 与标题两套集合，因为不同界面给的信息不同。这里有个容易踩的坑：
 `readLiveWorkspaces()` 会从 DSH 自己的 store 重新收集身份，而那个 store **不知道**
 本插件的停用清单。所以停用路径单独存在 `knownDisabledPaths` 里，每次重新收集时
-传回去，否则置灰会在下一次变更回调时消失。
+传回去，否则置灰会在下一次变更回调时消失。会话成员列表同理——DSH 的 store 里
+每个工作区视图都带 `sessionIds`，重新收集时一并取，不会丢。
 
 ### 启用
 
@@ -301,12 +326,30 @@ if (detachedSet.has(path)) continue
 
 `routes-smoke` 增加 22 项（模式默认值、`detach` 不归档而 `deregister` 归档、显式
 `archiveSessions` 优先于模式、归档成功/失败上报、`deregister: true` 兼容、启用流程、
-两条新路由的回环围栏）。
+两条新路由的回环围栏），另加 3 项钉住 `/status` 必须下发 `sessionIds`：成员列表
+原样透传、强制转成字符串（会话行按文本匹配 id）、缺字段退化为空数组而不是
+`undefined`（旧宿主可能整个省略）。
 
-`client-shape-smoke` 新增 5 项，覆盖「置灰的行必须真的不可操作」：`pointer-events`
-规则存在、选择器是通用的 `button`（那些按钮是 DSH 画的）、行本身仍可点击（否则
-`detach` 保留的会话就没法访问）、键盘路径也被摘掉（`inert` + `tabindex`）、以及
-撤销时恢复原有属性值而不是一律删除。
+`client-shape-smoke` 另加一组**行为**测试，而不只是字符串匹配：它把真正的
+`collectRemoteWorkspaces` 抽出来运行，断言停用工作区的会话进入 `disabledSessionIds`、
+在服务中的工作区会话**不**进入、缺 `sessionIds` 的工作区不抛错。原来的 bug 是漏了
+一条赋值，不是漏了一个名字——grep 名字抓不到它。
+
+同一套件还新增**语法检查**：所有其它断言都把 bundle 当**文本**读，所以一个根本
+解析不过的文件照样能让它们全绿——这真的发生过（CSS 模板字符串里一个游离的反引号
+提前结束了字面量）。`node --check` 只解析不执行，保持零依赖。
+
+`client-shape-smoke` 新增一组覆盖「置灰的行必须真的不可操作」：`pointer-events`
+规则存在、选择器是通用的 `button`（那些按钮是 DSH 画的）、工作区标题本身仍可点击
+（否则 `detach` 保留的会话就没法看清有哪些）、会话行整行不可点、键盘路径也被摘掉
+（`inert` + `tabindex`）、以及撤销时恢复原有属性值而不是一律删除。
+
+同一套件还钉住**悬停提示**这个唯一的说明渠道：中文提示必须同时写出「未勾选 → 记录与
+会话都保留」和「勾选 → 记录删除、会话归档」两个分支；英文提示按**自身文本**校验
+（`archived` 在别的键里也出现，按整包 grep 会让「只写了可逆那半」的英文提示蒙混过关）；
+提示必须同时挂在「卸载」与「确认卸载」两个按钮上（后者出现时前者的 `title` 已经不在
+视野里）；且不得在行内另起一行重复同一句话。三条都反向验证过：放回旧文案后 2 条变红，
+把常驻行加回去后「not duplicated」变红。
 
 全套：`node tests/run.mjs` **23/23** 通过（含用真实 DSH 框架跑的
 lifecycle / boot / tool-schemas，共 160 项 schema 断言；新增的 `probe-smoke` 15 项）。

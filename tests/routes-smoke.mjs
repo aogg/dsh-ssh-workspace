@@ -426,6 +426,44 @@ function fakeUploadReq ({ url, host = 'localhost:4074', chunks, method = 'POST' 
       check('status reports the auto-start preference', body.forwardSettings?.autoStart === false, JSON.stringify(body.forwardSettings))
     }
 
+    // The browser half greys a detached workspace's sessions, and a session row
+    // carries nothing but its own id — so /status has to ship the membership.
+    // Without it the group header greys while every session under it stays a
+    // live, clickable session whose workspace fence is shut.
+    {
+      const { res, state } = fakeRes()
+      const statusRoutes = makeRoutes({
+        engine: { ...engine, pool: new Map() },
+        router: { listRoots: () => [], listDisabled: () => ['ssh://box/srv/off'] },
+        forwards,
+        savedForwards: saved,
+        shells,
+        ctx: {
+          get: (name) => name !== 'workspaceRegistry' ? undefined : {
+            list: () => [
+              { id: 'ws-off', path: 'ssh://box/srv/off', title: 'off', sessionIds: ['s1', 's2'] },
+              { id: 'ws-on', path: 'ssh://box/srv/on', title: 'on', sessionIds: ['s3'] },
+              // A registry entry with no membership array must not crash the
+              // route: older hosts may omit it entirely.
+              { id: 'ws-bare', path: 'ssh://box/srv/bare', title: 'bare' },
+            ],
+          },
+        },
+      })
+      await statusRoutes.find(route => route.path === ROUTES.status).handler(
+        fakeReq({ url: ROUTES.status, headers: { host: 'localhost:4074' } }), res)
+      const body = JSON.parse(state.body)
+      const byId = new Map((body.workspaces ?? []).map(ws => [ws.id, ws]))
+      check('status ships the session membership of every workspace',
+        JSON.stringify(byId.get('ws-off')?.sessionIds) === JSON.stringify(['s1', 's2']),
+        JSON.stringify(byId.get('ws-off')))
+      check('...coerced to strings, because session rows are keyed by text',
+        (byId.get('ws-on')?.sessionIds ?? []).every(id => typeof id === 'string'),
+        JSON.stringify(byId.get('ws-on')))
+      check('...and an absent membership degrades to an empty list, not undefined',
+        Array.isArray(byId.get('ws-bare')?.sessionIds), JSON.stringify(byId.get('ws-bare')))
+    }
+
     // Fences on every new POST endpoint.
     for (const routePath of [ROUTES.forwardSave, ROUTES.forwardToggle, ROUTES.forwardDelete, ROUTES.forwardRemember, ROUTES.forwardSettings]) {
       const route = find(routePath)
