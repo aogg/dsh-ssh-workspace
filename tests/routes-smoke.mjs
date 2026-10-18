@@ -135,13 +135,17 @@ function fakeReq (options = {}) {
 }
 
 /** A fake engine that serves and accepts in-memory files. */
-function fakeEngine (files) {
+function fakeEngine (files, directories = new Set()) {
   const state = { opened: 0, closed: 0, renamed: [], unlinked: [], mkdirs: [] }
   return {
     state,
     async withSftp (_alias, work) {
       return await work({
         stat (target, callback) {
+          if (directories.has(target)) {
+            callback(null, { size: 0, isDirectory: () => true, mode: 0o040755 })
+            return
+          }
           if (!files.has(target)) { callback(Object.assign(new Error('no such file'), { code: 2 })); return }
           const content = files.get(target)
           callback(null, { size: content.length, isDirectory: () => false, mode: 0o100644 })
@@ -195,7 +199,7 @@ console.log('\n=== routes smoke ===\n')
 
 const engine = fakeEngine(new Map([
   ['/srv/report.txt', Buffer.from('hello from the remote host')],
-]))
+]), new Set(['/srv/subdir']))
 const forwards = { list: () => [], open: async () => ({}), close: () => false }
 const shells = { list: () => [], run: async () => ({}), close: () => 0 }
 const routes = makeRoutes({ engine, router: {}, forwards, shells, ctx: { get: () => undefined } })
@@ -248,8 +252,24 @@ check('the transfer route is registered', routes.some(route => route.path === RO
     url: `${ROUTES.download}?alias=a&path=${encodeURIComponent('/srv/missing.txt')}`,
     headers: { host: 'localhost:4074' },
   }), res)
-  check('a missing remote file answers with an error, not a body',
-    state.status === 200 && JSON.parse(state.body).error !== undefined, state.body)
+  // A 2xx here would be saved by the browser as a file named after the remote
+  // target, containing the JSON error. The status is the only channel the
+  // download flow honours, so it has to carry the failure.
+  check('a missing remote file is NOT answered with 2xx', state.status !== 200 && state.status !== 204,
+    String(state.status))
+  check('a missing remote file answers 404', state.status === 404, String(state.status))
+  check('a missing remote file still explains itself', JSON.parse(state.body).error !== undefined, state.body)
+}
+
+{
+  // A directory target is a bad request, not a server failure: the user asked
+  // for the wrong row, and 500 would blame the host.
+  const { res, state } = fakeRes()
+  await download.handler(fakeReq({
+    url: `${ROUTES.download}?alias=a&path=${encodeURIComponent('/srv/subdir')}`,
+    headers: { host: 'localhost:4074' },
+  }), res)
+  check('download of a directory answers 400', state.status === 400, String(state.status))
 }
 
 // --- upload ---------------------------------------------------------------
