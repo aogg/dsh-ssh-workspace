@@ -53,6 +53,14 @@
   工作区记录被删除、会话归档。展开确认行后「确认卸载」沿用同一个 `title`——那正是
   弹窗消失、提示最该在场的时刻。原 `mounted.removeRecordHint` 随之删除（复选框与
   按钮说的是同一件事，两处文案必然会漂移）。
+- **断开主机与手动断开端口现在完全一致**：`hosts/disconnect` 改走
+  `SavedForwardManager.closeAlias()`，逐条调用与端口行「断开」按钮相同的方法，因此
+  映射保留、`enabled` 置为 `false`、`failures` 不记任何原因。此前它复用连接掉线的
+  路径（`closeForAlias`），留下 `enabled: true` 与 `"SSH connection closed"`，面板据此
+  渲染红字「连接已断开」——把用户主动执行成功的操作报成故障，还附带「启动时自动开启
+  隧道」的暗示（用户刚刚明确关掉了它）。toast 也改为「已断开连接，同时关闭 N 条端口
+  转发」，N 来自响应的 `closedForwards`；未装配 `SavedForwardManager` 时仍回退到旧
+  路径（那时没有「意图」可关）。
 - `ssh_workspace_status` 返回新增 `disabled[]`（已停用工作区）。
 - `/status` 响应新增 `disabled[]`；浏览器端据此把侧边栏对应行置灰，**并让那一行的
   按钮不可点**（`pointer-events: none`）。置灰只是装饰，真正拒绝点击的是这条规则；

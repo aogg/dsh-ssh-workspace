@@ -891,6 +891,60 @@ function fakeUploadReq ({ url, host = 'localhost:4074', chunks, method = 'POST' 
       }) === true, String(opened.localPort))
     }
 
+    // --- a deliberate disconnect leaves saved tunnels like a manual close --
+    //
+    // With saved mappings present the route must NOT take the unplanned-drop
+    // path: that keeps `enabled` on and records "SSH connection closed", which
+    // the panel renders as a red "connection lost" line. The user asked for the
+    // shutdown, so the row has to end up exactly where the row's own close
+    // button leaves it.
+    {
+      const { SavedForwardManager } = await import(pathToFileURL(path.join(pluginRoot, 'lib/forward-persist.js')).href)
+      pool.clear()
+      const record = makeRecord()
+      pool.set('alpha', record)
+      const savedForwards = new SavedForwardManager({ forwards: forwardsReal, store })
+      forwardsReal.onClosed = (entry, reason) => { savedForwards.noteClosed(entry, reason) }
+
+      const port = await new Promise((resolve) => {
+        const server = createServer(() => {})
+        server.listen(0, '127.0.0.1', () => {
+          const bound = server.address().port
+          server.close(() => resolve(bound))
+        })
+      })
+      store.putForward({ id: 'fwd-route', alias: 'alpha', remotePort: 8080, localPort: port, enabled: true })
+      await savedForwards.openById('fwd-route')
+      check('a saved tunnel is live before the route disconnect',
+        savedForwards.list().find(row => row.id === 'fwd-route')?.live === true,
+        JSON.stringify(savedForwards.list()))
+
+      const routesWithSaved = makeRoutes({
+        engine: probeEngine,
+        router: { assertEnabled () {} },
+        forwards: forwardsReal,
+        savedForwards,
+        ctx: { get: () => undefined },
+      })
+      const { res, state } = fakeRes()
+      await routesWithSaved.find(route => route.path === ROUTES.hostDisconnect).handler(fakeReq({
+        method: 'POST',
+        headers: { host: 'localhost:4074', 'content-type': 'application/json' },
+        body: { alias: 'alpha' },
+      }), res)
+      const body = JSON.parse(state.body)
+      const row = savedForwards.list().find(entry => entry.id === 'fwd-route')
+      check('the route reports the tunnel it closed', body.closedForwards === 1, state.body)
+      check('a deliberate route disconnect stops the listener', row?.live === false, JSON.stringify(row))
+      check('a deliberate route disconnect turns the intent off', row?.enabled === false, JSON.stringify(row))
+      check('a deliberate route disconnect records no failure', row?.error === undefined, JSON.stringify(row?.error))
+      savedForwards.closeAlias('alpha')
+      store.deleteForward('fwd-route')
+      // Deliberately NOT disposing `forwardsReal`: the block below keeps using
+      // it, and a disposed manager throws on the next open.
+      forwardsReal.onClosed = undefined
+    }
+
     // --- closing a forward must NOT disconnect the host -------------------
     //
     // The reverse direction: a tunnel going away is not a reason to drop the

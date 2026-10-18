@@ -229,6 +229,30 @@ if (typeof clientRel === 'string' && existsSync(path.join(packageRoot, clientRel
     'a second copy of the same sentence drifts from the tooltip')
 }
 
+console.log('\n[a deliberate disconnect looks like closing the tunnel by hand]')
+// The user's requirement: disconnecting the SSH host while a tunnel is open must
+// look and read exactly like closing that tunnel from the forward row. The two
+// differences that matter are observable: the toast names the tunnels it shut
+// down, and no "connection lost" failure line is left behind for a shutdown the
+// user asked for. The panel's failure line is driven by the row's `error`, which
+// is set only by the unplanned-drop path.
+if (typeof clientRel === 'string' && existsSync(path.join(packageRoot, clientRel))) {
+  const client = readFileSync(path.join(packageRoot, clientRel), 'utf8')
+  const toasts = [...client.matchAll(/'hosts\.disconnectOkForwards': '([^']*)'/g)].map(match => match[1])
+  const [zhToast = '', enToast = ''] = toasts
+  check('both locales define the disconnect-with-forwards toast', toasts.length === 2, `${toasts.length} definition(s)`)
+  check('the toast states how many tunnels went down',
+    /\{n\}/.test(zhToast) && /转发/.test(zhToast), zhToast)
+  check('...in English too', /\{n\}/.test(enToast) && /forward/i.test(enToast), enToast)
+  check('the disconnect toast is chosen by the count the host reported',
+    /closedForwards > 0\s*\n\s*\? t\('hosts\.disconnectOkForwards'\)\.replace\('\{n\}', String\(closedForwards\)\)/
+      .test(client),
+    'the toast would say the same thing whether or not tunnels were shut down')
+  check('a disconnect with no tunnels keeps the plain message',
+    /: t\('hosts\.disconnectOk'\)/.test(client),
+    'one tunnel-free disconnect would otherwise announce "0 port forwards"')
+}
+
 console.log('\n[the bundles parse]')
 // Every other check in this file reads the bundle as TEXT, so a file that does
 // not even parse still passes them all: the string it greps for is present in a
