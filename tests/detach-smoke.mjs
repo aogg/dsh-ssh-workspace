@@ -357,11 +357,23 @@ const { formatRemotePath, isInsideAnyRemoteWorkspace } = await import(pathToFile
 
   // danger-full-access writes are still fenced by the MOUNT rule: permission and
   // reachability are independent, and a full-access session cannot write into a
-  // directory this deployment does not serve.
-  const outside = { targetKey: 'ssh://alpha/tmp/scratch.txt', displayPath: 'ssh://alpha/tmp/scratch.txt' }
+  // directory this deployment does not serve. `/srv` is used rather than `/tmp`
+  // because the temp area IS reachable on a host this deployment serves — the
+  // local `writableRoots` lists it, and the remote fence mirrors that.
+  const outside = { targetKey: 'ssh://alpha/srv/scratch.txt', displayPath: 'ssh://alpha/srv/scratch.txt' }
   const fullAccess = await codeOf(() => router.writeText(outside, 'x', undefined, undefined, { mode: 'danger-full-access' }))
   check('danger-full-access is still refused outside every mounted root',
     fullAccess === 'FS_OUTSIDE_WORKSPACE', String(fullAccess))
+
+  // The temp area, by contrast, is reachable. `danger-full-access` is the only
+  // mode that proves it: under `read-only` the mode fence denies BEFORE the mount
+  // fence is consulted, so a `read-only` refusal would say nothing about which
+  // fence answered. Here nothing but reachability can stop the write, so getting
+  // past the fence to SFTP is the proof.
+  const staged = { targetKey: 'ssh://alpha/tmp/build/out.o', displayPath: 'ssh://alpha/tmp/build/out.o' }
+  const tempFullAccess = await codeOf(() => router.writeText(staged, 'x', undefined, undefined, { mode: 'danger-full-access' }))
+  check('the host temp area is reachable for a write the mode allows',
+    tempFullAccess === undefined || tempFullAccess === 'FS_IO_ERROR', String(tempFullAccess))
 }
 
 // ---------------------------------------------------------------------------

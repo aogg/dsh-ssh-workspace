@@ -194,6 +194,64 @@ const { sessionModeOf, specModeOf, assertRemoteCommandAllowed, remoteReadOnlyMes
     workspaceWriteScopeRefusal(undefined, 'ssh://qiyk/home/dev/proj', target('/srv/x')) === undefined)
   check('a local root leaves the scope unchecked',
     workspaceWriteScopeRefusal('workspace-write', 'F:\\GitHub\\proj', target('/srv/x')) === undefined)
+
+  // The temp area mirrors `writableRoots`' constant `/tmp`: in scope on the
+  // session's OWN host, and still bound by the host comparison above.
+  check('workspace-write keeps the host temp area in scope',
+    workspaceWriteScopeRefusal('workspace-write', 'ssh://qiyk/home/dev/proj', target('/tmp/build.o')) === undefined)
+  check('the temp allowance does not extend to another host',
+    workspaceWriteScopeRefusal('workspace-write', 'ssh://qiyk/home/dev/proj', {
+      alias: 'other', remotePath: '/tmp/build.o', displayPath: 'ssh://other/tmp/build.o',
+    }) !== undefined)
+  check('a path that only looks like the temp area is still scope-checked',
+    workspaceWriteScopeRefusal('workspace-write', 'ssh://qiyk/home/dev/proj', target('/tmpish/build.o')) !== undefined)
+}
+
+// ---------------------------------------------------------------------------
+// A mode the gate cannot read must not read as permission
+// ---------------------------------------------------------------------------
+//
+// The local sandbox treats anything that is not `danger-full-access` as a
+// confining mode, and `writableRoots` returns `[]` for anything that is not
+// `workspace-write` — so a `future-mode` write is denied outright there. Skipping
+// both fences remotely would make the remote answer WEAKER than the local one for
+// the same input, which is the divergence this block pins.
+{
+  const { writeModeRefusal } = gate
+  check('read-only denies a write', writeModeRefusal('read-only', 'ssh://q/y.txt') !== undefined)
+  check('the read-only denial names the mode', /read-only/u.test(writeModeRefusal('read-only', 'ssh://q/y.txt') ?? ''))
+  check('workspace-write permits a write', writeModeRefusal('workspace-write', 'ssh://q/y.txt') === undefined)
+  check('danger-full-access permits a write', writeModeRefusal('danger-full-access', 'ssh://q/y.txt') === undefined)
+  // An absent mode is an unconfined deployment, not a denial.
+  check('no mode at all is not a denial', writeModeRefusal(undefined, 'ssh://q/y.txt') === undefined)
+  check('an empty mode is not a denial', writeModeRefusal('', 'ssh://q/y.txt') === undefined)
+
+  const unknown = writeModeRefusal('future-mode', 'ssh://q/y.txt')
+  check('an unrecognised mode denies the write', unknown !== undefined)
+  check('the unknown denial quotes the mode it could not read', /future-mode/u.test(unknown ?? ''), String(unknown))
+  // It must NOT be dressed up as the user's own choice: switching to `read-only`
+  // is not the fix, naming the accepted vocabulary is.
+  check('the unknown denial does not claim read-only',
+    !/denied under read-only mode/u.test(unknown ?? ''), String(unknown))
+  check('the unknown denial names the accepted modes',
+    /workspace-write, danger-full-access/u.test(unknown ?? ''), String(unknown))
+
+  // The same answer on the command surface, where an unknown mode used to run
+  // the command with the remote user's full permissions.
+  const { assertRemoteCommandAllowed, remoteUnknownModeMessage } = gate
+  let threw = ''
+  try {
+    assertRemoteCommandAllowed('future-mode', 'run a remote command', 'ssh://alpha')
+  } catch (error) {
+    threw = error instanceof Error ? error.message : String(error)
+  }
+  check('an unrecognised mode refuses a remote command', threw !== '')
+  check('the command refusal names the unrecognised mode', /future-mode/u.test(threw), threw)
+  check('the command refusal says the local sandbox confines it', /confines any mode/u.test(threw), threw)
+  check('an unrecognised mode is not reported as read-only',
+    !/sandbox mode is "read-only"/u.test(threw), threw)
+  check('the unknown-mode message is its own function',
+    /does not recognise/u.test(remoteUnknownModeMessage('run a remote command', 'ssh://alpha', 'future-mode')))
 }
 
 // ---------------------------------------------------------------------------
@@ -292,12 +350,15 @@ const { sessionModeOf, specModeOf, assertRemoteCommandAllowed, remoteReadOnlyMes
       reached.count === 1, `withSftp=${reached.count} code=${String(code)}`)
   }
 
-  // danger-full-access is not scope-checked but is still mount-fenced.
+  // danger-full-access is not scope-checked but is still mount-fenced. `/srv`
+  // is the exemplar because it is on a SERVED host yet outside every root; the
+  // host temp area is deliberately not, since `writableRoots` on the local side
+  // lists `/tmp` and the remote fence mirrors that (see the pair below).
   {
     const { router, reached } = makeRouter()
     let code
     try {
-      await router.writeText({ targetKey: 'ssh://qiyk/tmp/x.txt', displayPath: 'ssh://qiyk/tmp/x.txt' },
+      await router.writeText({ targetKey: 'ssh://qiyk/srv/x.txt', displayPath: 'ssh://qiyk/srv/x.txt' },
         'x', undefined, undefined, { mode: 'danger-full-access', workspaceRoot: 'ssh://qiyk/home/dev/proj' })
     } catch (error) {
       code = error?.code
@@ -305,6 +366,61 @@ const { sessionModeOf, specModeOf, assertRemoteCommandAllowed, remoteReadOnlyMes
     check('danger-full-access is still stopped by the MOUNT fence, not the scope',
       code === 'FS_OUTSIDE_WORKSPACE', String(code))
     check('the mount-fence refusal raised its own code', reached.count === 0, `withSftp=${reached.count}`)
+  }
+
+  // The temp area is reachable under the same mode, and under
+  // `workspace-write` it is in scope even though it is not inside the session
+  // workspace — the remote counterpart of `writableRoots`' `/tmp` entry.
+  {
+    const { router, reached } = makeRouter()
+    let code
+    try {
+      await router.writeText({ targetKey: 'ssh://qiyk/tmp/stage.o', displayPath: 'ssh://qiyk/tmp/stage.o' },
+        'x', undefined, undefined, policy)
+    } catch (error) {
+      code = error?.code
+    }
+    check('workspace-write writes to the host temp area', reached.count === 1 && code === undefined,
+      `withSftp=${reached.count} code=${String(code)}`)
+  }
+  {
+    const { router } = makeRouter()
+    let code
+    try {
+      await router.writeText({ targetKey: 'ssh://other/tmp/stage.o', displayPath: 'ssh://other/tmp/stage.o' },
+        'x', undefined, undefined, policy)
+    } catch (error) {
+      code = error?.code
+    }
+    check('the temp allowance does not reach ANOTHER host', code === 'FS_SANDBOX_DENIED', String(code))
+  }
+  {
+    const { router, reached } = makeRouter()
+    let code
+    try {
+      await router.writeText({ targetKey: 'ssh://qiyk/tmp/stage.o', displayPath: 'ssh://qiyk/tmp/stage.o' },
+        'x', undefined, undefined, { mode: 'danger-full-access', workspaceRoot: 'ssh://qiyk/home/dev/proj' })
+    } catch (error) {
+      code = error?.code
+    }
+    check('danger-full-access reaches the host temp area too', reached.count === 1 && code === undefined,
+      `withSftp=${reached.count} code=${String(code)}`)
+  }
+
+  // The router and the transfer tool resolve the mode through different carriers
+  // (a fifth argument here, the policy service there), so each needs its own
+  // proof that an unreadable mode denies rather than defaults to permission.
+  {
+    const { router, reached } = makeRouter()
+    let code
+    try {
+      await router.writeText({ targetKey: 'ssh://qiyk/home/dev/proj/x.txt', displayPath: 'ssh://qiyk/home/dev/proj/x.txt' },
+        'x', undefined, undefined, { mode: 'future-mode', workspaceRoot: 'ssh://qiyk/home/dev/proj' })
+    } catch (error) {
+      code = error?.code
+    }
+    check('the router refuses a write under an unrecognised mode', code === 'FS_SANDBOX_DENIED', String(code))
+    check('the refused unknown-mode write never reached SFTP', reached.count === 0, `withSftp=${reached.count}`)
   }
 }
 
@@ -357,6 +473,25 @@ const { sessionModeOf, specModeOf, assertRemoteCommandAllowed, remoteReadOnlyMes
       { agent: { session: { id: 's1' } } },
     )
     check('the detached fence still reports itself', /detached/u.test(result.error ?? ''), String(result.error))
+  }
+
+  // A mode the plugin cannot read is refused on the command surface too, and
+  // with a DIFFERENT sentence than `read-only`: telling the model "view only"
+  // would send it to a mode switch that is not the problem.
+  {
+    const { engine, reached } = makeEngine()
+    modeOf.current = 'future-mode'
+    const result = await toolOf(policyCtx, engine).execute(
+      { alias: 'qiyk', command: 'rm -rf /home/qiyk/test' },
+      { agent: { session: { id: 's1' } } },
+    )
+    check('an unrecognised mode cannot run a remote command', result.success === false, JSON.stringify(result))
+    check('the unknown-mode command refusal names the mode', /future-mode/u.test(result.error ?? ''), String(result.error))
+    // The accepted vocabulary is listed, so the word "read-only" appears; what
+    // must NOT appear is the claim that the session is *in* that mode.
+    check('the unknown-mode command refusal does not claim read-only',
+      !/sandbox mode is "read-only"/u.test(result.error ?? ''), String(result.error))
+    check('the refused unknown-mode command never reached the host', reached.count === 0, `reached=${reached.count}`)
   }
 
   // Every non-read-only mode keeps working — the gate must not break the tool.

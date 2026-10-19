@@ -42,6 +42,7 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 const SUITES = [
   'protocol',
   'client-shape',
+  'backdrop-dismiss',
   'tree-transfer',
   'insert-once',
   'locale-register',

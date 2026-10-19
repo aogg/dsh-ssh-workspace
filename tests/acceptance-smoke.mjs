@@ -147,9 +147,13 @@ check('listDir lists the remote directory', listing.some(entry => entry.name ===
 // layer rewrites every sandbox denial into a mode-named marker plus an escalation
 // hint, which would be wrong here twice over — the mode may already be the
 // widest one, and no permission change mounts a directory.
+// `/etc` is the exemplar rather than `/tmp`: the host temp area is deliberately
+// REACHABLE (the local `writableRoots` lists `/tmp`, and the remote fence mirrors
+// it), so a `/tmp` target would prove nothing about the mount fence. The refusal
+// is lexical and happens before any SFTP work, so the host is never touched.
 let fenceCode
 try {
-  await fs.writeText(remote('/tmp/dsh-ssh-workspace-acceptance-outside.txt'), 'nope', undefined, undefined, undefined)
+  await fs.writeText(remote('/etc/dsh-ssh-workspace-acceptance-outside.txt'), 'nope', undefined, undefined, undefined)
 } catch (error) {
   fenceCode = error.code
 }

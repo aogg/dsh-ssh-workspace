@@ -237,15 +237,24 @@ try {
   // `FS_OUTSIDE_WORKSPACE`, not `FS_SANDBOX_DENIED`: see remote-fs.js. A sandbox
   // denial is rewritten by the host's tool layer into a mode marker plus an
   // escalation hint, and escalating a permission never mounts a directory.
+  // `/etc` rather than `/tmp`: the host temp area is reachable on purpose (the
+  // local `writableRoots` lists `/tmp`), so `/tmp` no longer reads as "outside
+  // every root". The fence is lexical and answers before any SFTP work.
   let fenceCode
   try {
-    await router.writeText(target('/tmp/dsh-ssh-workspace-outside.txt'), 'nope', undefined, undefined, undefined)
+    await router.writeText(target('/etc/dsh-ssh-workspace-outside.txt'), 'nope', undefined, undefined, undefined)
   } catch (error) {
     fenceCode = error.code
   }
   check('writing outside every mounted root is refused', fenceCode === 'FS_OUTSIDE_WORKSPACE', String(fenceCode))
   const stillReadable = await router.stat(target('/tmp'), undefined)
   check('reads outside the fence remain available', stillReadable?.type === 'directory', JSON.stringify(stillReadable))
+  // The temp area is the one place outside a mounted root a write may land, so
+  // a build that stages there behaves exactly as its local twin does.
+  await router.writeText(target('/tmp/dsh-ssh-workspace-staged.txt'), 'staged\n', undefined, undefined, undefined)
+  check('writing to the host temp area is allowed',
+    (await router.readText(target('/tmp/dsh-ssh-workspace-staged.txt'), undefined)) === 'staged\n')
+  await engine.exec(alias, 'rm -f /tmp/dsh-ssh-workspace-staged.txt')
 
   // --- the sandbox mode on a real remote target ----------------------------
   console.log('\n[sandbox mode]')

@@ -47,6 +47,12 @@ function check (label, ok, detail) {
  *
  * `failAfter` makes the Nth write throw, which is how the mid-transfer failure
  * (and therefore the staging cleanup) is exercised.
+ *
+ * `links` maps an absolute path to the absolute path it points at, which is how
+ * the reachability fence gets exercised: the fence walks the path with `lstat`
+ * and asks the server to `realpath` the deepest existing component, so a parent
+ * directory that is a symlink escaping the served roots has to be visible in
+ * both of those answers.
  */
 function fakeSftp (options = {}) {
   const files = new Map(options.files ?? [])
@@ -57,9 +63,32 @@ function fakeSftp (options = {}) {
   // `mkdir` marks a path as a directory; `stat` reports the marker, so the
   // production code's "is this a directory" check sees the truth.
   const dirs = new Set(options.dirs ?? [])
+  const links = new Map(options.links ?? [])
+  // The longest linked prefix of `target`, replaced by its target, resolved
+  // repeatedly so a chain of links settles. A link deeper in the path is not
+  // followed by an `lstat` of an ancestor, exactly as on a real server.
+  const resolveThroughLinks = (target) => {
+    let current = target
+    for (let hop = 0; hop < 16; hop += 1) {
+      let hit
+      for (const [from, to] of links) {
+        if (current === from || current.startsWith(`${from}/`)) {
+          if (hit === undefined || from.length > hit.from.length) hit = { from, to }
+        }
+      }
+      if (hit === undefined) return current
+      current = `${hit.to}${current.slice(hit.from.length)}`.replace(/\/{2,}/gu, '/')
+    }
+    return current
+  }
+  const exists = (target) => files.has(target) || dirs.has(target) || links.has(target)
+  // `stat` follows the final component and every link above it, exactly as a
+  // real server does — so a write staged under a symlinked parent still finds
+  // its directory, and only the FENCE can be the thing that stops it.
   const entryAt = (target) => {
-    if (files.has(target)) return { kind: 'file', bytes: files.get(target) }
-    if (dirs.has(target)) return { kind: 'directory' }
+    const resolved = resolveThroughLinks(target)
+    if (files.has(resolved)) return { kind: 'file', bytes: files.get(resolved) }
+    if (dirs.has(resolved)) return { kind: 'directory' }
     return undefined
   }
   const sftp = {
@@ -74,6 +103,25 @@ function fakeSftp (options = {}) {
         mode: entry.kind === 'directory' ? 0o755 : 0o644,
         mtime: 0,
       })
+    },
+    // `lstat` reports the link itself rather than following it, which is what
+    // lets the fence's ancestor walk see that a component exists at all.
+    lstat (target, callback) {
+      if (links.has(target)) {
+        callback(null, {
+          isFile: () => false, isDirectory: () => false, isSymbolicLink: () => true,
+          size: 0, mode: 0o777, mtime: 0,
+        })
+        return
+      }
+      sftp.stat(target, callback)
+    },
+    realpath (target, callback) {
+      if (!exists(target) && !exists(resolveThroughLinks(target))) {
+        callback(Object.assign(new Error('no such file'), { code: 2 }), null)
+        return
+      }
+      callback(null, resolveThroughLinks(target))
     },
     mkdir (target, _attrs, callback) { if (typeof _attrs === 'function') callback = _attrs; dirs.add(target); callback(null) },
     open (target, flags, _attrs, callback) {
@@ -343,7 +391,132 @@ try {
       check('danger-full-access uploads outside the session workspace', full.ok === true, JSON.stringify(full))
     }
 
-    // A DOWNLOAD is not gated: it reads the remote side and writes locally, so
+  // --- the upload answers to the mounted-root fence ------------------------
+  //
+  // `ssh_workspace_transfer` does not travel through `ctx.fs`, so the router's
+  // write fence never sees it. Measured before this existed, an upload to a path
+  // outside every served root reached SFTP and staged its bytes there — while a
+  // `write` to the same spelling was refused with `FS_OUTSIDE_WORKSPACE`. These
+  // pin the two halves of the fence the router applies, so the two write paths
+  // really do agree.
+  {
+    const source = path.join(scratch, 'artifact.bin')
+    const rootsFor = (...spelling) => new Set(spelling)
+
+    // A host this deployment serves nothing from: the destination is unreachable
+    // no matter how wide the mode is, because mounting is not a permission.
+    const servedElsewhere = fakeSftp({ dirs: ['/srv', '/srv/app', '/etc'] })
+    let unmounted
+    try {
+      await transferFile(fakeEngine(servedElsewhere.sftp), {
+        alias: 'test', direction: 'upload', localPath: source,
+        remotePath: '/etc/cron.d/dsh-probe', roots: rootsFor('ssh://other/srv/app'),
+      })
+    } catch (error) { unmounted = error }
+    check('an upload outside every mounted root is refused', unmounted?.code === 'FS_OUTSIDE_WORKSPACE', String(unmounted?.code))
+    check('the refused upload never staged a byte on the host',
+      servedElsewhere.state.writes === 0 && servedElsewhere.state.renamed.length === 0,
+      JSON.stringify(servedElsewhere.state))
+
+    // Same host, path simply not served.
+    const notServed = fakeSftp({ dirs: ['/srv', '/srv/app', '/etc'] })
+    let offRoot
+    try {
+      await transferFile(fakeEngine(notServed.sftp), {
+        alias: 'test', direction: 'upload', localPath: source,
+        remotePath: '/etc/cron.d/dsh-probe', roots: rootsFor('ssh://test/srv/app'),
+      })
+    } catch (error) { offRoot = error }
+    check('an upload to an unserved directory on the same host is refused',
+      offRoot?.code === 'FS_OUTSIDE_WORKSPACE', String(offRoot?.code))
+
+    // The half the LEXICAL check cannot see: the spelling is inside a served
+    // root, but its parent directory is a symlink leading out of it. `write`
+    // refuses this; an upload used to accept it.
+    const escaping = fakeSftp({
+      dirs: ['/srv', '/srv/app', '/etc', '/etc/outside'],
+      links: [['/srv/app/out', '/etc/outside']],
+    })
+    let throughLink
+    try {
+      await transferFile(fakeEngine(escaping.sftp), {
+        alias: 'test', direction: 'upload', localPath: source,
+        remotePath: '/srv/app/out/artifact.bin', roots: rootsFor('ssh://test/srv/app'),
+      })
+    } catch (error) { throughLink = error }
+    check('an upload whose parent symlink escapes the roots is refused',
+      throughLink?.code === 'FS_OUTSIDE_WORKSPACE', `${String(throughLink?.code)} ${String(throughLink?.message)}`)
+    check('the escape refusal names the symlink as the cause',
+      /symbolic link resolves outside/u.test(throughLink?.message ?? ''), String(throughLink?.message))
+    check('the escaping upload created nothing inside the roots',
+      escaping.state.renamed.length === 0 && !escaping.files.has('/etc/outside/artifact.bin'),
+      JSON.stringify([...escaping.files.keys()]))
+
+    // And the fence must not break the ordinary case.
+    const happy = fakeSftp({ dirs: ['/srv', '/srv/app'] })
+    const allowed = await transferFile(fakeEngine(happy.sftp), {
+      alias: 'test', direction: 'upload', localPath: source,
+      remotePath: '/srv/app/artifact.bin', roots: rootsFor('ssh://test/srv/app'),
+    })
+    check('an upload inside a served root still works with the fence in place', allowed.bytes > 0, JSON.stringify(allowed))
+
+    // The host temp area is reachable, mirroring `writableRoots`' `/tmp` entry:
+    // a build that stages outside the workspace must not fail for a reason its
+    // local twin never hits.
+    const staged = fakeSftp({ dirs: ['/srv', '/srv/app', '/tmp', '/tmp/build'] })
+    const toTemp = await transferFile(fakeEngine(staged.sftp), {
+      alias: 'test', direction: 'upload', localPath: source,
+      remotePath: '/tmp/build/artifact.o', roots: rootsFor('ssh://test/srv/app'),
+    })
+    check('an upload to the host temp area is allowed', toTemp.bytes > 0 && staged.files.has('/tmp/build/artifact.o'),
+      JSON.stringify(toTemp))
+  }
+
+  // --- the upload tool passes the served roots down -------------------------
+  {
+    const { workspaceTools } = await import(pathToFileURL(path.join(pluginRoot, 'lib/tools.js')).href)
+    const source = path.join(scratch, 'tree', 'a.txt')
+    const served = fakeSftp({ dirs: ['/srv', '/srv/app', '/etc'] })
+    const engine = { ...fakeEngine(served.sftp), assertNotDisabled () {} }
+    const router = { roots: new Set(['ssh://test/srv/app']) }
+    const ctx = {
+      get: (name) => (name === 'sandboxPolicy' ? { resolve: () => ({ mode: 'danger-full-access', workspaceRoot: 'ssh://test/srv/app' }) } : undefined),
+    }
+    const tool = workspaceTools(ctx, engine, router, undefined, undefined)
+      .find(toolEntry => toolEntry.name === 'ssh_workspace_transfer')
+    const result = await tool.execute(
+      { alias: 'test', direction: 'upload', localPath: source, remotePath: '/etc/cron.d/probe' },
+      { agent: { session: { id: 's1' } } },
+    )
+    check('the tool refuses an upload outside the mounted roots even at full access',
+      result.ok === false && /outside every mounted remote workspace/u.test(result.error ?? ''), JSON.stringify(result))
+    check('the tool refused without touching the host', served.state.writes === 0, JSON.stringify(served.state))
+  }
+
+  // --- an upload answers to a mode the gate cannot read ---------------------
+  {
+    const { workspaceTools } = await import(pathToFileURL(path.join(pluginRoot, 'lib/tools.js')).href)
+    const source = path.join(scratch, 'tree', 'a.txt')
+    const served = fakeSftp({ dirs: ['/srv', '/srv/app'] })
+    const ctx = {
+      get: (name) => (name === 'sandboxPolicy' ? { resolve: () => ({ mode: 'future-mode', workspaceRoot: 'ssh://test/srv/app' }) } : undefined),
+    }
+    const tool = workspaceTools(ctx, { ...fakeEngine(served.sftp), assertNotDisabled () {} },
+      { roots: new Set(['ssh://test/srv/app']) }, undefined, undefined)
+      .find(toolEntry => toolEntry.name === 'ssh_workspace_transfer')
+    const result = await tool.execute(
+      { alias: 'test', direction: 'upload', localPath: source, remotePath: '/srv/app/up.txt' },
+      { agent: { session: { id: 's1' } } },
+    )
+    check('an unrecognised mode refuses the upload rather than allowing it',
+      result.ok === false, JSON.stringify(result))
+    check('the unknown-mode refusal says the mode is not recognised',
+      /does not recognise/u.test(result.error ?? ''), String(result.error))
+    check('the unknown-mode refusal did not reach the host', served.state.writes === 0, JSON.stringify(served.state))
+  }
+
+  // --- a DOWNLOAD is not gated: it reads the remote side and writes locally, so
+
     // "view only" is exactly the mode where it should keep working.
     const downloadSftp = fakeSftp({ dirs: ['/srv', '/srv/app'], files: [['/srv/app/down.txt', new Uint8Array(Buffer.from('x'))]] })
     const downloadTool = workspaceTools(policyCtx, { ...fakeEngine(downloadSftp.sftp), assertNotDisabled () {} }, undefined, undefined, undefined)

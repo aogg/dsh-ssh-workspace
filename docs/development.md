@@ -53,23 +53,26 @@ profile 安装（`pnpm install`）会让第 1 步命中 profile 内的解析链�
 ## 冒烟测试与 CI
 
 `tests/` 下是一组按依赖分层的冒烟套件；`node tests/run.mjs` 依次以子进程运行
-全部套件（也可 `node tests/run.mjs live acceptance` 只跑指定套件）。共 24 个套件，
+全部套件（也可 `node tests/run.mjs live acceptance` 只跑指定套件）。共 25 个套件，
 断言数如下（下表按裸检出实测，`DSH_CORE_ROOT` / `DSH_WS_TEST_ALIAS` 未设置时
-5 个套件 SKIP，其余 19 个套件合计 775 项断言）：
+5 个套件 SKIP，其余 20 个套件合计 849 项断言；`DSH_CORE_ROOT` 指向真实装配树时
+2 个套件 SKIP，合计 1054 项）。下表的项数是数每个套件打印的 `PASS` 行得到的，
+不要与末尾 `=== N passed` 那行相加——`locale-register` 与 `secrets` 的收尾格式不同。
 
 | 套件 | 前置 | 项数 | 覆盖 |
 | --- | --- | --- | --- |
 | `protocol-smoke` | 无 | 27 | `ssh://` 语法、规范化、前缀判定、basename / dirname、`file:` URI |
 | `client-shape-smoke` | 无 | 57 | package.json 的 `dsh.client` / `exports` / `files`、bundle 装载约定、`node --check` 解析、停用工作区的会话收集行为、悬停提示文案 |
+| `backdrop-dismiss-smoke` | 无 | 28 | 对话框遮罩的关闭判据：按下与松开都必须落在遮罩（拖选文字松开在遮罩不得关闭）、主键-only（副键 / 中键只弹菜单）、触屏 `pointerup` 报 `button: -1` 仍可关闭、按下出窗松手不留残留标志、三个对话框各自的忙碌门禁、源码接线不得退回 `onClick` |
 | `tree-transfer-smoke` | 无 | 41 | 目录树上传、原子发布、递归与失败路径 |
 | `insert-once-smoke` | 无 | 18 | 拖入文件的 chip 只插入一次（HMR 重复插入的回归） |
 | `locale-register-smoke` | 无 | 21 | 中英词典注册、重复注册不污染、`translate` 回落 |
-| `detach-smoke` | 无 | 72 | 停用清单读写与脏数据退化、路径包含判定、`ctx.fs` 十个方法逐个断言被拒、重新启用两条路径、shell / terminal 拒绝且不拨号、工作区外照常可用、跨分区写入隔离、启用不得经过围栏探测、**沙箱模式围栏（`read-only` 拒写且不拨号）与三个围栏错误码的可分性** |
+| `detach-smoke` | 无 | 73 | 停用清单读写与脏数据退化、路径包含判定、`ctx.fs` 十个方法逐个断言被拒、重新启用两条路径、shell / terminal 拒绝且不拨号、工作区外照常可用、跨分区写入隔离、启用不得经过围栏探测、**沙箱模式围栏（`read-only` 拒写且不拨号）、三个围栏错误码的可分性、`/tmp` 对写围栏可达而对停用 / 探针仍按原始挂载根** |
 | `probe-smoke` | 无 | 15 | 内建桥三条身份探针无活连接时不拨号、挂载根外必须 `ENOENT`、有连接时取真实属性、broken 记录不算连接（直接数 `withSftp` / `acquire` 次数） |
 | `phase6-smoke` | 无（有真框架时更全） | 36 | 失败与规模路径的回归：断连 close 不误判完成、rename 回退不误删目标、`listDir` 无 N+1 stat、`StreamTail` join 缓存 |
 | `store-lock-smoke` | 无 | 15 | 主机存储的跨进程写锁：互斥与降级、死锁接管、并发 `mutateHosts` 不丢条目、`save()` 的替换语义 |
-| `transfer-smoke` | 无 | 25 | 单文件传输的流式拷贝、原子替换、失败清理、`ssh_workspace_transfer` 的模式门禁（上传被拒 / 下载放行 / 无策略服务 / 策略解析失败）与**上传的范围判定**（会话工作区内放行 / 工作区外拒绝 / `danger-full-access` 放行） |
-| `mode-gate-smoke` | 无 | 88 | 远端写入的沙箱模式门禁：`sessionPolicyOf` 的三个解析结果与「解析失败 ≠ 用户选了 read-only」的文案可分性、六条命令 / 终端路径的放行与拒绝、**拒绝时未触达主机**（直接数 `exec` / `acquire` / `openChannel`）、持久 shell 的 `close` 例外、终端开 PTY 与逐次写入两道门禁、控制字节例外、`workspace-write` 收窄到会话工作区（会话内 / 兄弟根 / 跨主机根 / `..` 拼写 / 本地 root 不参与比较）、路由层真的读这份判定、公告与实际一致 |
+| `transfer-smoke` | 无 | 38 | 单文件传输的流式拷贝、原子替换、失败清理、`ssh_workspace_transfer` 的模式门禁（上传被拒 / 下载放行 / 无策略服务 / 策略解析失败 / **读不懂的模式也拒**）、**上传的范围判定**（会话工作区内放行 / 工作区外拒绝 / `danger-full-access` 放行）与**上传的可达性围栏**（挂载根外拒绝且不落一字节 / 父目录 symlink 逃逸拒绝 / 服务内放行 / `/tmp` 放行 / 工具把 `router.roots` 真正传下去） |
+| `mode-gate-smoke` | 无 | 115 | 远端写入的沙箱模式门禁：`sessionPolicyOf` 的三个解析结果与「解析失败 ≠ 用户选了 read-only」的文案可分性、六条命令 / 终端路径的放行与拒绝、**拒绝时未触达主机**（直接数 `exec` / `acquire` / `openChannel`）、持久 shell 的 `close` 例外、终端开 PTY 与逐次写入两道门禁、控制字节例外、`workspace-write` 收窄到会话工作区（会话内 / 兄弟根 / 跨主机根 / `..` 拼写 / 本地 root 不参与比较）、**主机 `/tmp` 在范围内的同一主机上放行、换主机不跟**、**读不懂的模式在写入与命令两面都拒**、路由层真的读这份判定、公告与实际一致 |
 | `shell-smoke` | 无 | 18 | 远端持久会话：`cd` / 变量 / 后台任务跨调用保留、关闭与超时 |
 | `terminal-smoke` | 无 | 23 | 终端接管：`ssh://` cwd 的 PTY 开在远端、围栏拒绝、还原 |
 | `transport-smoke` | 无 | 17 | 传输路由与流式通道（第二条 SFTP 通道、退化路径） |

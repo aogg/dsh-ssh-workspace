@@ -80,9 +80,25 @@
 | 目标 | `workspace-write` 的结果 |
 | --- | --- |
 | 会话工作区内 | 允许 |
+| **该主机的 `/tmp`**（会话工作区外） | **允许**——与本地一致，见下 |
 | 同一主机的兄弟目录（即使已挂载） | 拒绝，`FS_SANDBOX_DENIED`，文案点名会话工作区 |
 | 另一台主机的已挂载根 | 拒绝，文案点名两个主机 |
-| 未挂载路径 | 拒绝，`FS_OUTSIDE_WORKSPACE`（挂载围栏，另一道） |
+| 未挂载路径（`/tmp` 之外） | 拒绝，`FS_OUTSIDE_WORKSPACE`（挂载围栏，另一道） |
+
+**为什么远端也允许 `/tmp`**：本地的 `writableRoots(policy)` 除 `workspaceRoot` 外还列了常量
+`/tmp` 与 `os.tmpdir()`（`dsh-sandbox/lib/index.js`，注释明写「漏掉它就会拒绝这个模式本来承诺
+允许的写入」）。远端此前把 `/tmp` 判成「工作区外」而拒绝，于是**远端构建全部写不了暂存文件，而本地
+同一份构建正常**——这正是本地注释里点名的那种偏差。现在 `/tmp` 与它的子目录算作可达，判定仍是
+词法的（不探测 `$TMPDIR`），且**只对已经有挂载根的主机生效**：只知别名、什么都没挂载的主机仍然
+不可达，「先挂载」这条没有变松。`danger-full-access` 同样受益——否则会出现「更宽的模式反而更窄」
+的非单调结果。
+
+**模式读不懂时按最严格处理**：`read-only` / `workspace-write` / `danger-full-access` 之外的任何
+字符串（未来新增的模式名、fold 损坏出的值）现在**拒绝**，写入与命令都是。本地后端对同样的输入走的
+是 containment 分支且 `writableRoots` 返回 `[]`，即一律拒绝；远端此前会同时跳过模式围栏与范围围栏，
+只剩挂载根——同一个输入「本地收紧、远端放开」。拒绝文案**不会**谎称这是你选的「仅可查看」：切换模式
+修不好一个读不懂的字符串，文案会列出被认可的三个模式。策略服务**完全缺席**仍是「不受限」而非拒绝，
+这条没有变。
 
 **命令则不然**：`workspace-write` 下远端命令仍以远端登录用户权限运行，无法收窄到工作区——
 限制**进程**需要内核边界，而它跨不过 SSH。文件写入被收窄，命令没有被收窄，这个差别是
@@ -101,10 +117,16 @@
 `ctx.fs` 沙箱约束。而且它只看得到部署默认模式、看不到会话级覆盖，按它判定会得出错误结论。
 模型面向的写路径走 `ctx.fs` 与插件自己的工具，那条路上模式是生效的。插件自己的工具不经 `ctx.fs`，
 所以它们**各自解析** `ctx.sandboxPolicy.resolve({ session })`：`ssh_workspace_transfer` 的上传
-（写入远端）在 `read-only` 下被拒，下载（只读远端）照常可用；上传还遵守与 `write` / `edit`
-**同一份**工作区范围判定（`workspaceWriteScopeRefusal`），所以两条写路径不会分叉。策略服务
-缺席＝不受限，但**策略解析失败按 `read-only` 处理**——拒绝一次可重试的上传，好过在「仅可查看」
-会话里静默写入；文案会区分这两种情况。
+（写入远端）在 `read-only` 下被拒，下载（只读远端）照常可用。上传现在**四条围栏全部与 `write` / `edit`
+一致**——模式（`writeModeRefusal`）、工作区范围（`workspaceWriteScopeRefusal`）、挂载根
+（`assertWithinRemoteRoots`）、符号链接真实落点（`assertFencedRealpath`），所以两条写路径不会分叉：
+一个 `write` 会拒绝的落点，上传同样拒绝，且**在写入任何字节之前**拒绝。此前上传缺后两条围栏，实测能
+把字节落到未挂载的 `/etc/cron.d/…`（而 `write` 到同一拼写报 `FS_OUTSIDE_WORKSPACE`）——那正是
+「两条写路径不会分叉」这句话当时的反例，现已由 `transfer-smoke` 的失败反证钉死。策略服务
+缺席＝不受限，但**策略解析失败按拒绝处理**——拒绝一次可重试的上传，好过在「仅可查看」会话里静默写入；
+文案会区分这两种情况。浏览器面板的上传/下载走 HTTP 路由，是**用户自己的动作**，只受挂载根与停用围栏
+约束，**不受会话模式约束**（与本地文件面板同理：模式管的是 agent，不是用户）。
+
 
 ### 命令执行是另一条独立的写路径
 
@@ -119,13 +141,13 @@
 | `bash` / `pwsh`（workdir 为 `ssh://`） | `ctx.shell` → `patch-shell.js` | 读 spec 上的 `sandboxPolicy` |
 | `terminal_open` / `terminal_send`（cwd 为 `ssh://`） | `ctx.subprocess.spawnTerminal` | `patch-terminal.js`：开 PTY 时拒绝，且**每次写入**重新判定 |
 
-这六条读的是**同一个** `sandboxPolicy.mode`，但共用代码的程度不同：后四条（`exec` / 持久 shell /
-`bash`、`pwsh` / 终端）共用 `lib/mode-gate.js` 的判定与拒绝文案；`ssh_workspace_transfer` 从同一模块
-取 `sessionPolicyOf` 与范围判定；`write` / `edit` 在自己的路由里判定模式（`FS_SANDBOX_DENIED` 由宿主
-改写成 `[sandbox: …]`，与本地一致），只把 `workspace-write` 的范围判定交给 `mode-gate.js`。
-分歧的风险因此落在「模式取自哪里」——六条的主判据都是会话级策略（`write` / `edit` 用宿主传入的
-`sandboxPolicy`，其余五条自己 `resolve({ session })`）；只有 `write` / `edit` 在策略缺席时回落到
-部署默认，那是无 agent 的调用，本地后端对同样的调用也用部署默认。
+这六条读的是**同一个** `sandboxPolicy.mode`，而且模式判定本身**共用同一份代码**：`write` / `edit`
+与 `ssh_workspace_transfer` 的上传都调用 `mode-gate.js` 的 `writeModeRefusal`，四条命令表面共用同一模块
+的 `assertRemoteCommandAllowed`。分歧的风险因此只剩下「模式取自哪里」——六条的主判据都是会话级策略
+（`write` / `edit` 用宿主传入的第五个参数 `sandboxPolicy`，其余五条自己 `resolve({ session })`）；
+只有 `write` / `edit` 在策略缺席时回落到部署默认，那是无 agent 的调用，本地后端对同样的调用也用部署默认。
+（`FS_SANDBOX_DENIED` 由宿主改写成 `[sandbox: …]`，与本地一致。）
+
 
 这不是预防性设计：曾有一个 `read-only` 会话执行
 `ssh_workspace_exec { command: "rm /home/qiyk/test/test.py" }` 并拿到 `[exit code: 0]`，而同会话的

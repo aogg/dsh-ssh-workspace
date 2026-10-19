@@ -55,9 +55,14 @@ Cordis 拒绝在同一作用域第二次 `provide('fs')`（实现按服务的隔
 
 | 围栏 | 问题 | 拒绝码 | 宿主如何处理 |
 | --- | --- | --- | --- |
-| 沙箱模式 | 这个会话允许写吗（`read-only`） | `FS_SANDBOX_DENIED` | 改写成 `[sandbox: …]` 标记 + 升权提示 |
-| 挂载根 | 这个目录被服务吗 | `FS_OUTSIDE_WORKSPACE` | 原文直达模型 |
+| 沙箱模式 | 这个会话允许写吗（`read-only`，或任何读不懂的模式） | `FS_SANDBOX_DENIED` | 改写成 `[sandbox: …]` 标记 + 升权提示 |
+| 挂载根（含该主机的 `/tmp`） | 这个目录被服务吗 | `FS_OUTSIDE_WORKSPACE` | 原文直达模型 |
 | 工作区停用 | 用户把它关了吗 | `FS_PERMISSION_DENIED` | 原文直达模型 |
+
+写围栏问「被服务吗」时用的是 `writeFenceRoots`：原始挂载根**加上该主机的 `/tmp`**，与本地
+`writableRoots` 列出常量 `/tmp` 保持一致。放宽只在写围栏生效，且只对已有挂载根的主机生效；
+读探针、`node:fs` 桥、停用围栏继续按原始挂载根作答，所以 `stat ssh://host/tmp` 一类的身份
+探针不会因为这道放宽而多出一批可答的路径。
 
 模式判定必须在远端重做一次，因为本机的实现（`SandboxedFileSystem.checkedTarget`，见
 `@deepseek-ai/dsh-fs-sandbox`）是**原型上一个本地方法**：插件的同名自有属性覆盖了
@@ -72,8 +77,12 @@ Cordis 拒绝在同一作用域第二次 `provide('fs')`（实现按服务的隔
 `workspace-write` 在远端**比较会话自己的 workspace root**，与本地一致：本地后端用
 `writableRoots(policy)` 判定，第一项是 `policy.workspaceRoot`。这个值由
 `SandboxPolicyService.resolve` 返回 `session.header.cwd` 原样得到——远端会话就是那个
-`ssh://` 拼写，可以直接与目标比较。落在会话工作区之外的写入返回 `FS_SANDBOX_DENIED`，
-文案点名会话工作区与出路；跨主机的已挂载根同样被拒。
+`ssh://` 拼写，可以直接与目标比较。落在会话工作区之外（且不在该主机 `/tmp` 之下）的写入返回
+`FS_SANDBOX_DENIED`，文案点名会话工作区与出路；跨主机的已挂载根同样被拒。
+
+`workspace-write` / `danger-full-access` **之外**的任意模式字符串一律拒绝，与本地一致：本地对读不懂的
+模式走 containment 分支且 `writableRoots` 返回 `[]`。此前远端会跳过模式与范围两道围栏，同一个输入
+「本地收紧、远端放开」。`undefined`（策略服务完全缺席）仍是「不受限」而非拒绝。
 
 （此前这里写的是「不比较，因为那台机器的路径对远端无意义」。那句话是错的：实测
 `resolve()` 返回的就是远端拼写，可用；而且不比较会让一个会话能写同一主机上的兄弟根，
@@ -89,6 +98,10 @@ Cordis 拒绝在同一作用域第二次 `provide('fs')`（实现按服务的隔
 `ctx.fs`，所以它们各自解析 `ctx.sandboxPolicy.resolve({ session })`（见 `tools.js` 的
 `sessionSandboxPolicy`，它是 `mode-gate.js` 里 `sessionPolicyOf` 的薄适配器，好让
 「解析失败」这个原因随策略一起传下去）：`ssh_workspace_transfer` 的上传被门禁，下载不被门禁。
+上传现在四道围栏与 `write` / `edit` 完全同步——模式（`writeModeRefusal`）、范围
+（`workspaceWriteScopeRefusal`）、挂载根与符号链接落点（`fenceUploadTarget`），此前缺的后两道
+实测能把字节落到未挂载的 `/etc`，正是「两条写路径不会分叉」的反例。浏览器面板的上传路由同样过
+后两道围栏，但**不过模式与范围**——那是用户自己的动作，模式管的是 agent。
 
 词法围栏（`isRemotePathUnder`，规范化后做前缀比较）只是快路径；写 / 删
 操作在落盘前还做一次**服务器 `realpath` 裁决**（`assertFencedRealpath`，
@@ -96,7 +109,9 @@ Cordis 拒绝在同一作用域第二次 `provide('fs')`（实现按服务的隔
 挂载根内，否则 `FS_OUTSIDE_WORKSPACE`。没有这一步时，围栏内一个指向外部的
 符号链接（或中间目录为符号链接）会让词法判断与真实落点不一致，写入 / 删除
 即可越界。覆盖点为所有写、删入口——原子替换（`#publish`）、`copyFile` 直写
-与 `rm` 桥、`mkdir`；realpath 读取失败按 `FS_NOT_FOUND` 语义处理。
+与 `rm` 桥、`mkdir`，以及 `ssh_workspace_transfer` 的上传与浏览器面板的上传路由
+（`transfer.js` 的 `fenceUploadTarget`：挂载根 + realpath 两道一起，在任何字节落盘之前）；
+realpath 读取失败按 `FS_NOT_FOUND` 语义处理。
 **读取不受围栏限制**，因此不做此校验；元数据缓存（见下）同样永不服务围栏
 校验与写路径。
 

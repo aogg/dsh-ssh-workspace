@@ -182,6 +182,21 @@ function fakeEngine (files, directories = new Set()) {
           callback(null)
         },
         mkdir (target, callback) { state.mkdirs.push(target); callback(null) },
+        // The upload fence walks the destination with `lstat` and asks the
+        // server to `realpath` the deepest existing component. This double has
+        // no symbolic links, so a resolved spelling is the spelling itself —
+        // enough to let an in-roots upload pass and to keep the walk honest
+        // about what exists.
+        lstat (target, callback) {
+          if (target === '/' || directories.has(target)) { callback(null, { mode: 0o040755, isDirectory: () => true }); return }
+          if (files.has(target)) { callback(null, { mode: 0o100644, isDirectory: () => false }); return }
+          callback(Object.assign(new Error('no such file'), { code: 2 }))
+        },
+        realpath (target, callback) {
+          if (target === '/') { callback(null, '/'); return }
+          if (!directories.has(target) && !files.has(target)) { callback(Object.assign(new Error('no such file'), { code: 2 }), null); return }
+          callback(null, target)
+        },
         rename (from, to, callback) {
           state.renamed.push([from, to])
           const content = files.get(from) ?? Buffer.alloc(0)
@@ -396,6 +411,64 @@ function fakeUploadReq ({ url, host = 'localhost:4074', chunks, method = 'POST' 
   }), res)
   check('an upload into the remote root joins without a doubled slash',
     JSON.parse(state.body).remotePath === '/top.txt', state.body)
+}
+
+// --- the browser's upload answers to the mounted-root fence ----------------
+//
+// The panel reaches `POST /upload` directly, not `ctx.fs`, so without this the
+// browser could land bytes where the model's own `write` was refused. The fence
+// is the SAME pair the router applies (mounted roots, then the server's
+// `realpath`), and it answers before a single byte is staged.
+// Policy (mode / session scope) is deliberately absent here: this is a user
+// action, and the mode governs the agent.
+{
+  const servedDirs = new Set(['/srv', '/srv/app', '/etc', '/tmp', '/tmp/build'])
+  const inRoots = new Map()
+  const inRootsEngine = fakeEngine(inRoots, servedDirs)
+  const fencedRoutes = makeRoutes({
+    engine: inRootsEngine,
+    router: { assertEnabled () {}, roots: new Set(['ssh://a/srv/app']) },
+    forwards, shells, ctx: { get: () => undefined },
+  })
+  const upload = fencedRoutes.find(route => route.path === ROUTES.upload)
+  {
+    const { res, state } = fakeRes()
+    await upload.handler(fakeUploadReq({
+      url: `${ROUTES.upload}?alias=a&path=${encodeURIComponent('/etc/cron.d')}&name=dsh-probe`,
+      chunks: [Buffer.from('escape')],
+    }), res)
+    const body = JSON.parse(state.body)
+    check('the browser cannot upload to a directory outside every mounted root',
+      body.ok === false && /outside every mounted remote workspace/u.test(body.error ?? ''), state.body)
+    check('the refused browser upload staged nothing',
+      inRootsEngine.state.opened === 0 && inRootsEngine.state.renamed.length === 0,
+      JSON.stringify(inRootsEngine.state))
+    check('the refused browser upload created no directory',
+      inRootsEngine.state.mkdirs.length === 0, JSON.stringify(inRootsEngine.state.mkdirs))
+  }
+  {
+    // The host temp area stays reachable, matching `write`: a panel upload that
+    // stages a build artifact outside the workspace must not fail for a reason
+    // the local file panel never hits.
+    const { res, state } = fakeRes()
+    await upload.handler(fakeUploadReq({
+      url: `${ROUTES.upload}?alias=a&path=${encodeURIComponent('/tmp/build')}&name=artifact.o`,
+      chunks: [Buffer.from('staged')],
+    }), res)
+    check('the browser can upload into the host temp area',
+      JSON.parse(state.body).ok === true && inRoots.get('/tmp/build/artifact.o')?.toString() === 'staged',
+      state.body)
+  }
+  {
+    // And the ordinary in-workspace upload still works with the fence in place.
+    const { res, state } = fakeRes()
+    await upload.handler(fakeUploadReq({
+      url: `${ROUTES.upload}?alias=a&path=${encodeURIComponent('/srv/app')}&name=ok.txt`,
+      chunks: [Buffer.from('y')],
+    }), res)
+    check('an in-workspace browser upload succeeds with the fence in place',
+      JSON.parse(state.body).ok === true, state.body)
+  }
 }
 
 // --- saved forwards -------------------------------------------------------

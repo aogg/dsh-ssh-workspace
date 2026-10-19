@@ -8,8 +8,8 @@
 
 | 错误码 | 含义 | 常见触发 |
 | --- | --- | --- |
-| `FS_OUTSIDE_WORKSPACE` | 写入越出已挂载的远端工作区 | 目标路径不在任何已挂载根之下——例如向未挂载的 `ssh://` 路径写文件；先 `ssh_workspace_mount`。写入 / 删除前还会对目标父目录做一次服务器 `realpath` 裁决，**经符号链接的真实落点越界同样被拒** |
-| `FS_SANDBOX_DENIED` | 本机沙箱模式不允许写入 | 会话处于 **`read-only`** 时对远端文件 write / edit。远端目标不会经过本机的 `SandboxedFileSystem.checkedTarget`，所以这条判定由插件自己补上，文案与本地一致。`workspace-write` 要求目标在**会话自己的**工作区之内（远端会话的 root 就是那个 `ssh://` 拼写，可直接比较）；落在会话工作区外的目标同样返回此码，文案会点名会话工作区。**策略解析失败也返回此码**，但那时的文案会说明是接线问题而非你选的模式——切换模式不会有用 |
+| `FS_OUTSIDE_WORKSPACE` | 写入越出已挂载的远端工作区 | 目标路径既不在任何已挂载根之下、也不在该主机 `/tmp` 之下——例如向未挂载的 `ssh://` 路径写文件；先 `ssh_workspace_mount`。写入 / 删除前还会对目标父目录做一次服务器 `realpath` 裁决，**经符号链接的真实落点越界同样被拒**。`ssh_workspace_transfer` 的上传与浏览器面板的上传走同一对判定，且在发出任何字节之前判定 |
+| `FS_SANDBOX_DENIED` | 本机沙箱模式不允许写入 | 会话处于 **`read-only`** 时对远端文件 write / edit。远端目标不会经过本机的 `SandboxedFileSystem.checkedTarget`，所以这条判定由插件自己补上，文案与本地一致。`workspace-write` 要求目标在**会话自己的**工作区之内（远端会话的 root 就是那个 `ssh://` 拼写，可直接比较）或该主机的 `/tmp` 之下；两者之外的目标同样返回此码，文案会点名会话工作区。**三个被认可的模式之外的任意模式字符串**（未来新增的名字、fold 损坏出的值）也返回此码，与本地一致——本地对读不懂的模式一律拒；那时的文案会列出被认可的三个模式，**不会**谎称这是你选的「仅可查看」。**策略解析失败同样返回此码**，但那时的文案会说明是接线问题而非你选的模式——切换模式不会有用 |
 | `FS_NOT_FOUND` | 远端目标不存在 | 路径拼写错误、目录已被删除；也用于"不是合法远端路径"的输入 |
 | `FS_PERMISSION_DENIED` | 远端账号权限不足 | SFTP 返回 Permission denied；挂载前可先用面板「测试连接」+ 目录浏览确认可写。**工作区被停用时也返回此码**，文案带 `the remote workspace is detached` |
 | `FS_STALE_VERSION` / `FS_NOT_OBSERVED` | 并发修改 / 未读先写 | 读过后文件被改动再写回；或直接覆盖一个从未读过的既有文件（先 read 再 write） |
@@ -58,7 +58,7 @@ danger-full-access」。读（`read` / `glob` / `grep`）不受影响。
 | --- | --- | --- |
 | `[sandbox: … under read-only mode]` | 会话模式是仅可查看 | 切到 `workspace-write` / `danger-full-access`，或对单次调用升权 |
 | `cannot run a remote command …: the session sandbox mode is "read-only"` | 同上，但目标是命令而非文件 | 切换会话模式；升级对这条不起作用，插件工具没有 `sandbox_permissions` 字段 |
-| `FS_OUTSIDE_WORKSPACE` + `outside every mounted remote workspace` | 目标不在任何已挂载根下 | 先 `ssh_workspace_mount`；**升权没有用**，模式再宽也不会让目录变成已挂载 |
+| `FS_OUTSIDE_WORKSPACE` + `outside every mounted remote workspace` | 目标不在任何已挂载根下（也不在该主机 `/tmp` 下） | 先 `ssh_workspace_mount`；**升权没有用**，模式再宽也不会让目录变成已挂载 |
 | `FS_PERMISSION_DENIED` + `the remote workspace is detached` | 工作区被停用 | 面板「启用」或 `ssh_workspace_enable` |
 
 > 这三种失败过去都返回 `FS_SANDBOX_DENIED`，而宿主的工具层会把该码改写成
