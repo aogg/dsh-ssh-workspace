@@ -109,10 +109,12 @@ same error semantics.
    click Install:
    - **npm package** (distributed via npm, version pinning supported):
      `@shiqyka/dsh-ssh-workspace`, or pin a version
-     `@shiqyka/dsh-ssh-workspace@0.2.4`
+     `@shiqyka/dsh-ssh-workspace@0.2.6`
      ([npm page](https://www.npmjs.com/package/@shiqyka/dsh-ssh-workspace));
    - **repository address** (latest code from Git):
      `https://github.com/siqyka/dsh-ssh-workspace`
+     (the plugin manager installs its dependencies for you; only a manual clone
+     linked into a profile needs the next section)
 3. **Restart**: restart the client once installation finishes, and you're ready to go.
 
 From there:
@@ -127,6 +129,16 @@ Confirm your hosts in the "Remote Workspaces" panel (add one if needed)
 Create a session in that workspace — file I/O, shell, search and change tracking
 all land on the remote host automatically
 ```
+
+### Using a source checkout
+
+```bash
+git clone https://github.com/siqyka/dsh-ssh-workspace.git
+cd dsh-ssh-workspace
+npm ci          # ssh2 is a direct dependency and does not arrive with a clone
+```
+
+Then restart the client.
 
 ## Host management
 

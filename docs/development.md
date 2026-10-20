@@ -62,6 +62,12 @@ DSH_SSH_WORKSPACE_DISABLE_UPSTREAM_WORKAROUNDS=1
 4. `$DSH_HOME/profiles/<name>/node_modules`，profile 名依次取 `desktop`、`default`、`web`；
 5. 应用内回退：`process.resourcesPath` 与 `process.execPath` 下的 `resources/app.asar/dsh/node_modules`、`resources/app/dsh/node_modules` 等，兼容 Electron 打包布局。
 
+上面的顺序只适用于**被 `requirePeer` 加载的那三个 peer**。三点补充：
+
+- 四个 peer 必须同时标 `peerDependenciesMeta.<name>.optional: true`，否则 npm 7+ 会自动把它们下载成一份私有宿主副本（实测见 `peers-smoke` 一行）。
+- `@deepseek-ai/dsh` **不被 `requirePeer` 加载**（本包运行期从不 `require` 它），它的作用是声明版本范围：宿主 `app-boot` 的 `unmetRequirements` 在没有顶层 `engines.dsh` 时，正是靠 peer 里的 `@deepseek-ai/dsh` 与 `@deepseek-ai/dsh-*` 做兼容性判定。所以不要为了「反正运行时不 require」而删掉它——删了就没有任何版本门禁。
+- `@deepseek-ai/cordis` 只在 JSDoc 的 `import('@deepseek-ai/cordis').Context` 里出现（`ctx` 是参数传进来的），保留它是为了类型提示；它不以 `dsh-` 前缀开头，本来就不参与上面那道版本门禁。
+
 profile 安装（`pnpm install`）会让第 1 步命中 profile 内的解析链；直接从源码检出处加载时，依赖不在本包树下，需显式给 `DSH_PEER_ROOT` 指向加载器的 `node_modules`。
 
 ## 调试
@@ -78,14 +84,17 @@ profile 安装（`pnpm install`）会让第 1 步命中 profile 内的解析链�
 `tests/` 下是一组按依赖分层的冒烟套件；`node tests/run.mjs` 依次以子进程运行
 全部套件（也可 `node tests/run.mjs live acceptance` 只跑指定套件）。共 28 个套件，
 断言数如下（下表按裸检出实测，`DSH_CORE_ROOT` / `DSH_WS_TEST_ALIAS` 未设置时
-6 个套件 SKIP，其余 22 个套件合计 911 项断言；`DSH_CORE_ROOT` 指向真实装配树时
-只剩 `live` / `acceptance` 这 2 个 SKIP，合计 1133 项）。下表的项数是数每个套件打印的 `PASS` 行得到的，
+6 个套件整体 SKIP，其余 22 个套件合计 911 项断言；`DSH_CORE_ROOT` 指向真实装配树时
+`projection-real` / `lifecycle` / `tool-schemas` 三个跑起来，合计 **1133** 项，此时只剩
+**3 条 SKIP 行**：`live` 与 `acceptance` 整体跳过，加上 `boot-smoke` 内部那段需要真实主机的
+远端检查——`boot-smoke` 本身仍在运行并贡献 29 项断言，所以「跳过套件数」是 2 个、
+SKIP 行是 3 条，两者不要混用）。下表的项数是数每个套件打印的 `PASS` 行得到的，
 不要与末尾 `=== N passed` 那行相加——`locale-register` 与 `secrets` 的收尾格式不同。
 
 | 套件 | 前置 | 项数 | 覆盖 |
 | --- | --- | --- | --- |
 | `protocol-smoke` | 无 | 27 | `ssh://` 语法、规范化、前缀判定、basename / dirname、`file:` URI |
-| `peers-smoke` | 无 | 9 | 依赖声明本身：宿主包必须是 `peerDependencies`（不能是普通依赖），且每个都标 `peerDependenciesMeta.<name>.optional`——npm 7+ 会自动安装缺失的 peer，实测同一清单会展开 **872 个包、133 个 `@deepseek-ai`** 的私有宿主副本，正是「服务实例分裂」的来源；meta 表不得出现非 peer 项；`ssh2` 必须留在 `dependencies`（随安装本包的那次安装到来，插件不自行检查）；真实解析路径可用且按名记忆化，缺失时错误信息点名 specifier 并列出搜过的根 |
+| `peers-smoke` | 无 | 9 | 依赖声明本身：宿主包必须是 `peerDependencies`（不能是普通依赖），且每个都标 `peerDependenciesMeta.<name>.optional`——否则 npm 7+ 会把它们装成一份私有宿主副本，正是「服务实例分裂」的来源；meta 表不得出现非 peer 项；`ssh2` 必须留在 `dependencies`；真实解析路径可用且按名记忆化，缺失时错误信息点名 specifier 并列出搜过的根。peer 声明也是宿主读取的数据：`app-boot` 的 `unmetRequirements` 在缺 `engines.dsh` 时用它做版本门禁，`routeLinked` 用 `readPeerNames` 决定 linked 安装路由到宿主哪一份依赖 |
 | `client-shape-smoke` | 无 | 57 | package.json 的 `dsh.client` / `exports` / `files`、bundle 装载约定、`node --check` 解析、停用工作区的会话收集行为、悬停提示文案 |
 | `backdrop-dismiss-smoke` | 无 | 28 | 对话框遮罩的关闭判据：按下与松开都必须落在遮罩（拖选文字松开在遮罩不得关闭）、主键-only（副键 / 中键只弹菜单）、触屏 `pointerup` 报 `button: -1` 仍可关闭、按下出窗松手不留残留标志、三个对话框各自的忙碌门禁、源码接线不得退回 `onClick` |
 | `projection-relax-smoke` | 无 | 54 | `UPSTREAM-1` 上游补丁的逻辑层：放宽后 `ssh://` 通过而空串 / 相对路径仍被拒、`null` 照旧、其它投影单元不动、`register` 包装覆盖两种加载顺序、幂等、卸载只摘包装不动 schema、**退役探测三种结局**（`upstreamFixed` 不打补丁 / 生产顺序就地放宽 / 未注册时挂包装）与 `DSH_SSH_WORKSPACE_DISABLE_UPSTREAM_WORKAROUNDS` 的跳过语义 |

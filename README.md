@@ -102,10 +102,11 @@ DSH 的所有文件操作都走 `ctx.fs`（`@deepseek-ai/dsh-fs`）这一个服�
 2. **输入来源**：在插件管理界面的安装输入框中二选一，点击安装：
    - **npm 包**（走 npm 分发，支持锁定版本）：
      `@shiqyka/dsh-ssh-workspace`，或指定版本
-     `@shiqyka/dsh-ssh-workspace@0.2.4`
+     `@shiqyka/dsh-ssh-workspace@0.2.6`
      （[npm 页面](https://www.npmjs.com/package/@shiqyka/dsh-ssh-workspace)）；
    - **仓库地址**（从 Git 取最新代码）：
      `https://github.com/siqyka/dsh-ssh-workspace`
+     （这种方式由插件管理器代为安装依赖；手动 clone 后 link 进 profile 才需要看下一节）
 3. **重启**：安装完成后重启客户端，即可开始使用。
 
 之后的使用流程：
@@ -119,6 +120,16 @@ DSH 的所有文件操作都走 `ctx.fs`（`@deepseek-ai/dsh-fs`）这一个服�
         ▼
 在该工作区里新建会话 —— 文件读写、shell、搜索、变更追踪自动落到远端
 ```
+
+### 从源码仓库使用
+
+```bash
+git clone https://github.com/siqyka/dsh-ssh-workspace.git
+cd dsh-ssh-workspace
+npm ci          # ssh2 是直接依赖，不随 clone 到位
+```
+
+装完重启客户端即可。
 
 ## 主机管理
 
