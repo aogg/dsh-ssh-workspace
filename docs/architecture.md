@@ -271,6 +271,37 @@ receiver 原样转发。
 `node:path` 的补丁覆盖默认导出与 `win32` / `posix` 命名空间（同一对象去重），
 卸载时逐项复原；非 `ssh://` 调用必须逐字节等价于原实现，这是该层的回归底线。
 
+### 一处补丁打不到的地方：按值捕获的 schema
+
+`syncBuiltinESMExports()` 更新的是 ESM **绑定**，所以「在调用时读绑定」的代码都会看到补丁。
+但 `@deepseek-ai/dsh-working-directory` 把谓词当**值**交给了 zod：
+
+```js
+const directorySchema = z.string().min(1).refine(isAbsolute).nullable()
+```
+
+这个 schema 在服务构造函数里建好，而 `working-directory` 在 roster 中排在插件之前，所以它
+捕获的永远是原始 `isAbsolute`。后果是：会话头校验能过（`dsh-session` 读绑定），但**读历史**时
+`sessionProjections.restore` 的 `viewSchema.parse(header.cwd)` 会失败，浏览器显示
+`历史加载失败：failed to project session … Invalid input（gateway/internal）`——错误链一路
+穿透到 gateway，提示里看不出真正原因。
+
+插件不去改部署自带的 bundle（升级即失效），而是在 `lib/patch-projection.js` 里把**已注册**的那个
+单元的两个 schema 换成惰性判定：`ssh://` 直接放行，其余原样交给原 schema。因为每个读路径都经
+`def.stateSchema.parse` / `def.wire.viewSchema.parse`，替换这两个成员即覆盖 `restore`、
+`viewCheckpoint`、`snapshot`、`cachedSnapshot`、`hydrate` 与变更推送。`register` 同时被包一层，
+以覆盖「插件先加载、单元后注册」的重载/测试顺序。
+
+放宽只有 `ssh://` 一种形态：相对路径与空串照旧被拒，`null` 照旧通过，其它投影单元不动。
+回归测试是 `tests/projection-relax-smoke.mjs`（54 项，逻辑）与 `tests/projection-real-smoke.mjs`
+（17 项，真实 `SessionProjectionRegistry` + `WorkingDirectoryService` + 真实 zod，按生产顺序
+装配）。两者的反向验证都做过：禁用修复后分别有 9 条与 3 条断言变红。
+
+这是一条**上游临时补丁**（`UPSTREAM-1-working-directory-isAbsolute`），不是插件的能力：
+上游把 `refine(isAbsolute)` 改成 `refine((value) => isAbsolute(value))` 后它就该消失。
+补丁会自己发现这一点——安装时先用一个 `ssh://` 值探测已注册的 schema，能通过就什么都不打，
+只打一行 INFO。登记与删除步骤见 [upstream-workarounds.md](./upstream-workarounds.md)。
+
 ## 工作区登记
 
 `WorkspaceRegistry.create()` 内部用 `fs.realpath` 规范化路径，`ssh://` 永远

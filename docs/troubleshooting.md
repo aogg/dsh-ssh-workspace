@@ -66,6 +66,35 @@ danger-full-access」。读（`read` / `glob` / `grep`）不受影响。
 > 「在 danger-full-access 下被拒」这种自相矛盾的提示，模型接下来会去申请一个对「没挂载」毫无作用的升级。
 > 拆成独立的码，是为了让这几句真话能原样到达模型眼前。
 
+## 打开远端会话报「历史加载失败」
+
+界面上出现：
+
+```
+历史加载失败：failed to project session "session-…": [ { "code": "custom", "path": [], "message": "Invalid input" } ]（gateway/internal）
+```
+
+**这不是会话损坏，也不用删缓存。** 它只发生在 `cwd` 是 `ssh://…` 的会话上，本地路径的会话不受影响。
+
+原因在宿主的 `@deepseek-ai/dsh-working-directory`：它把会话目录注册成一个投影单元，schema 写成
+
+```js
+const directorySchema = z.string().min(1).refine(isAbsolute).nullable()
+```
+
+`refine(isAbsolute)` 传给 zod 的是**函数值**——模块 `import { isAbsolute } from "node:path"` 在服务构造那一刻持有的那个函数。插件随后替换 `node:path.isAbsolute` 并调用 `syncBuiltinESMExports()`，那只能让**读取绑定**的调用方（会话头校验、`fs-local` 等）看到补丁；已经被当作值捕获的 schema 仍在调用原始 `isAbsolute`，对 `ssh://host/path` 返回 `false`，于是校验失败。
+
+插件的加载顺序永远晚于 `working-directory`（它在 roster 里排在前面），也**不应该**去改部署自带的 bundle，所以修复放在插件侧：`lib/patch-projection.js` 把该单元已注册的 `stateSchema` / `wire.viewSchema` 换成一个惰性判定（`ssh://` 直接放行，其余仍走原 schema）。这条判定覆盖了 `restore` / `viewCheckpoint` / `snapshot` / `cachedSnapshot` / `hydrate` 与变更推送全部读路径。
+
+放宽的范围只有 `ssh://` 这一个形态：相对路径、空字符串照旧被拒，`null` 照旧通过，其它投影单元完全不动。
+
+如果你在**没有**装这个插件（或插件未激活）的部署上看到这条报错，那说明该会话确实带着一个宿主无法解释的 `cwd`——此时才是真的需要修数据。
+
+这条修复是**上游临时补丁**，登记为 `UPSTREAM-1-working-directory-isAbsolute`：DSH 把
+`refine(isAbsolute)` 改成 `refine((value) => isAbsolute(value))` 之后它就不再需要，届时本插件
+会在启动日志里打一行 `… is no longer needed …`，并停止打补丁。机制与删除步骤见
+[upstream-workarounds.md](./upstream-workarounds.md)。
+
 ## 连接问题
 
 按以下顺序排查：

@@ -28,6 +28,29 @@
 | `lib/tools.js` | 10 个 `ssh_workspace_*` Agent 工具（schema / 渲染 / 执行） |
 | `lib/peers.js` | 宿主依赖（`@deepseek-ai/*`、`ssh2`）的定位与加载 |
 | `lib/client.js` | 浏览器半边：面板、添加工作区流程、标记装饰、全部样式与中英文案 |
+| `lib/patch-projection.js` | **上游临时补丁**（`UPSTREAM-1`）：把 `workingDirectory` 投影单元的 schema 放宽到接受 `ssh://`。上游修好后自动停止生效，见 [upstream-workarounds.md](./upstream-workarounds.md) |
+
+## 上游临时补丁
+
+有些改动不是「插件在这个接缝上接管」，而是「绕开宿主自身的缺陷」。两者的生命周期不同：
+接管随插件存在，绕开随宿主升级失去意义。后者一律登记在
+[upstream-workarounds.md](./upstream-workarounds.md)，并且必须满足三条：
+
+1. **可 grep 的稳定 id**（`UPSTREAM-<n>-<package>-<subject>`），出现在代码框注、文档与 CHANGELOG；
+2. **自动退役**：宿主修好后补丁自己不再生效，并在启动日志里说明——靠「探测宿主的行为」而不是
+   「比对版本号」，因为版本号在 patch 级别不可靠，而行为是合同；
+3. **测试信号**：对应套件在宿主修好的那次升级上变红，且变红的语义是「删掉我」而不是「回归」。
+
+第三条最容易被写反。`tests/projection-real-smoke.mjs` 的第一节断言「缺陷仍然存在」，
+就是在替这条规则站岗：它红的那天，正确的动作是删代码，不是修测试。
+
+用一个环境变量可以在不装新版本的情况下验证某条补丁是否仍承重：
+
+```
+DSH_SSH_WORKSPACE_DISABLE_UPSTREAM_WORKAROUNDS=1
+```
+
+它只跳过上游 workaround，不影响插件的任何其它接管。
 
 ## 依赖解析
 
@@ -53,10 +76,10 @@ profile 安装（`pnpm install`）会让第 1 步命中 profile 内的解析链�
 ## 冒烟测试与 CI
 
 `tests/` 下是一组按依赖分层的冒烟套件；`node tests/run.mjs` 依次以子进程运行
-全部套件（也可 `node tests/run.mjs live acceptance` 只跑指定套件）。共 25 个套件，
+全部套件（也可 `node tests/run.mjs live acceptance` 只跑指定套件）。共 27 个套件，
 断言数如下（下表按裸检出实测，`DSH_CORE_ROOT` / `DSH_WS_TEST_ALIAS` 未设置时
-5 个套件 SKIP，其余 20 个套件合计 849 项断言；`DSH_CORE_ROOT` 指向真实装配树时
-2 个套件 SKIP，合计 1054 项）。下表的项数是数每个套件打印的 `PASS` 行得到的，
+6 个套件 SKIP，其余 21 个套件合计 903 项断言；`DSH_CORE_ROOT` 指向真实装配树时
+3 个套件 SKIP，合计 1125 项）。下表的项数是数每个套件打印的 `PASS` 行得到的，
 不要与末尾 `=== N passed` 那行相加——`locale-register` 与 `secrets` 的收尾格式不同。
 
 | 套件 | 前置 | 项数 | 覆盖 |
@@ -64,6 +87,7 @@ profile 安装（`pnpm install`）会让第 1 步命中 profile 内的解析链�
 | `protocol-smoke` | 无 | 27 | `ssh://` 语法、规范化、前缀判定、basename / dirname、`file:` URI |
 | `client-shape-smoke` | 无 | 57 | package.json 的 `dsh.client` / `exports` / `files`、bundle 装载约定、`node --check` 解析、停用工作区的会话收集行为、悬停提示文案 |
 | `backdrop-dismiss-smoke` | 无 | 28 | 对话框遮罩的关闭判据：按下与松开都必须落在遮罩（拖选文字松开在遮罩不得关闭）、主键-only（副键 / 中键只弹菜单）、触屏 `pointerup` 报 `button: -1` 仍可关闭、按下出窗松手不留残留标志、三个对话框各自的忙碌门禁、源码接线不得退回 `onClick` |
+| `projection-relax-smoke` | 无 | 54 | `UPSTREAM-1` 上游补丁的逻辑层：放宽后 `ssh://` 通过而空串 / 相对路径仍被拒、`null` 照旧、其它投影单元不动、`register` 包装覆盖两种加载顺序、幂等、卸载只摘包装不动 schema、**退役探测三种结局**（`upstreamFixed` 不打补丁 / 生产顺序就地放宽 / 未注册时挂包装）与 `DSH_SSH_WORKSPACE_DISABLE_UPSTREAM_WORKAROUNDS` 的跳过语义 |
 | `tree-transfer-smoke` | 无 | 41 | 目录树上传、原子发布、递归与失败路径 |
 | `insert-once-smoke` | 无 | 18 | 拖入文件的 chip 只插入一次（HMR 重复插入的回归） |
 | `locale-register-smoke` | 无 | 21 | 中英词典注册、重复注册不污染、`translate` 回落 |
@@ -79,11 +103,12 @@ profile 安装（`pnpm install`）会让第 1 步命中 profile 内的解析链�
 | `forward-smoke` | 无 | 34 | 隧道本身：建立 / 拆除、`closeForAlias` 按主机拆除且**只拆该主机**、`holds` 引用计数、关闭转发不得断开主机 |
 | `forward-persist-smoke` | 无 | 102 | 已存映射：意图 / 事实分离、端口预检三态、占用端口不落盘、自动开启幂等、连接断开留痕、**主动断开主机与端口行「断开」逐字段一致**（`live` / `enabled` / `error` 三元组） |
 | `capabilities-smoke` | 无 | 19 | 主机能力探测（rg / git / inotifywait）与提示渲染 |
-| `routes-smoke` | 无 | 121 | 22 条路由的请求 / 响应契约、两种卸载模式、归档、停用围栏、`sessionIds` 强制转字符串、断开必须连带拆除转发且走 `closeAlias`、下载失败必须是非 2xx |
+| `routes-smoke` | 无 | 126 | 22 条路由的请求 / 响应契约、两种卸载模式、归档、停用围栏、`sessionIds` 强制转字符串、断开必须连带拆除转发且走 `closeAlias`、下载失败必须是非 2xx |
 | `secrets-smoke` | 无 | 26 | 凭据存储与加密、迁移、`~/.ssh/config` 明文兼容、密钥文件按需创建 |
 | `lifecycle-smoke` | `DSH_CORE_ROOT` | SKIP | 真实 Cordis 下 5 种服务装配顺序的接管 / 路由 / 工具注册（期望 22 路由 / 10 工具） |
 | `boot-smoke` | `DSH_CORE_ROOT`（远端段另需 `DSH_WS_TEST_ALIAS`） | SKIP | 生产顺序引导、`ctx.fs` 接管与还原、工具端到端、挂载 → 停用 → 读被拒 → 启用往返 |
-| `tool-schemas-smoke` | `DSH_CORE_ROOT` | SKIP | 工具 schema 过真实 `assertSupportedJsonSchema` + render 冒烟 |
+| `tool-schemas-smoke` | `DSH_CORE_ROOT` | SKIP | 工具 schema 过真实 `assertSupportedJsonSchema` + render 冒烟（160 项） |
+| `projection-real-smoke` | `DSH_CORE_ROOT` | SKIP | `UPSTREAM-1` 补丁对**真实** `SessionProjectionRegistry` + `WorkingDirectoryService` + 真实 zod，按生产顺序装配：复现 `Invalid input` → 打补丁后 `restore` / `viewCheckpoint` 双双通过、卸载后已打开的 ssh:// 会话仍可读 |
 | `live-smoke` | `DSH_WS_TEST_ALIAS`（peers 可解析） | SKIP | 远端 SFTP 全量契约、写围栏、错误语义、原子写、symlink |
 | `acceptance-smoke` | `DSH_CORE_ROOT` + `DSH_WS_TEST_ALIAS` | SKIP | 经补丁后 `ctx.fs` 的端到端验收（挂载 → 读写 → 围栏 → 卸载） |
 

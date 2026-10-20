@@ -2,6 +2,42 @@
 
 本文件记录 dsh-ssh-workspace 的版本变更。0.1.16 之前的版本为未公开的本地迭代，未收录。
 
+## [0.2.6] - 2026-10-20
+
+### 文档
+
+- **上游临时补丁登记**：新增 [docs/upstream-workarounds.md](docs/upstream-workarounds.md)，
+  给「绕开宿主缺陷」这一类改动建立登记制度——稳定 id、代码内框注、自动退役信号、删除步骤。
+  首条登记的是 `UPSTREAM-1-working-directory-isAbsolute`（即下条修复）。
+  配套改动：`lib/patch-projection.js` 在安装时先用一个 `ssh://` 值探测已注册的 schema，
+  若宿主自己就能接受（说明上游已把 `refine(isAbsolute)` 改成 `refine((value) => isAbsolute(value))`），
+  则**什么都不打**、返回 `upstreamFixed: true` 并打一行 INFO，把 workaround 变成会自我宣告的
+  no-op 而不是静默的双重放宽；新增 `DSH_SSH_WORKSPACE_DISABLE_UPSTREAM_WORKAROUNDS`
+  开关，便于在真实部署上验证某条补丁是否仍承重。
+  `projection-real-smoke` 第一节加了注释说明「这一节变红＝上游已修好，应删补丁而非修测试」。
+
+### 修复
+
+- **`cwd` 是 `ssh://` 的会话打开时报「历史加载失败」**：界面上是
+  `历史加载失败：failed to project session "session-…": [ { "code": "custom", "path": [], "message": "Invalid input" } ]（gateway/internal）`，
+  只发生在远端会话，本地路径的会话不受影响，删投影缓存也没用。根因在宿主的
+  `@deepseek-ai/dsh-working-directory`：它把会话目录注册成投影单元，schema 写成
+  `z.string().min(1).refine(isAbsolute).nullable()`，而 `refine(isAbsolute)` 传给 zod 的是**函数值**
+  ——模块在服务构造那一刻持有的那个 `isAbsolute`。插件的内建桥接替换 `node:path.isAbsolute` 并调用
+  `syncBuiltinESMExports()`，只更新了 ESM **绑定**：读绑定的调用方（会话头校验、`fs-local`）能看到补丁，
+  已经被当作值捕获的 schema 看不到。于是会话能建、能继续对话，但**重新加载历史**时
+  `sessionProjections.restore` 的 `viewSchema.parse(header.cwd)` 对 `ssh://host/path` 返回 false，
+  抛出的 zod 细节又被 gateway 兜底成 `gateway/internal`，提示里完全看不出真因。
+  插件不改部署自带的 bundle（升级即失效），改为在 `lib/patch-projection.js` 把已注册单元的
+  `stateSchema` / `wire.viewSchema` 换成惰性判定（`ssh://` 放行，其余交还原 schema），并用一层
+  `register` 包装覆盖「插件先加载」的顺序。放宽范围只有 `ssh://` 一种形态：相对路径、空字符串照旧被拒，
+  `null` 照旧通过，其它投影单元不动。
+  反向验证：新增 `projection-relax-smoke`（54 项）与 `projection-real-smoke`（17 项，真实
+  `SessionProjectionRegistry` + `WorkingDirectoryService` + 真实 zod，按生产顺序装配）；禁用修复后
+  分别 9 条与 3 条断言变红，其中真实套件那条精确复现了 `Invalid input`。
+  全套 `node tests/run.mjs` **27/27** 通过：裸检出 903 项 / 6 套件 SKIP，`DSH_CORE_ROOT`
+  指向真实装配树时 1125 项 / 3 套件 SKIP（仅剩需真实 SSH 主机的 `live`、`acceptance`）。
+
 ## [0.2.5] - 2026-10-19
 
 ### 修复

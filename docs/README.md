@@ -18,6 +18,7 @@
 | [forward-persistence.md](./forward-persistence.md) | 端口转发的持久化：已存映射、开关语义、端口预检、启动自动开启 | 完成 |
 | [unmount-modes.md](./unmount-modes.md) | 工作区卸载：停用、会话归档、全局停机围栏与一键启用 | 完成 |
 | [development.md](./development.md) | 开发、调试与发布：源码结构、依赖解析、测试套件、打包流程 | 完成 |
+| [upstream-workarounds.md](./upstream-workarounds.md) | 上游临时补丁登记：宿主缺陷、一行修法、自动退役信号与删除步骤 | 完成 |
 | [troubleshooting.md](./troubleshooting.md) | 排查与常见问题：错误语义、停用围栏、连接问题、已知限制 | 完成 |
 
 状态取值：初稿 = 主要内容已成；完成 = 已校对。

@@ -43,6 +43,8 @@ const SUITES = [
   'protocol',
   'client-shape',
   'backdrop-dismiss',
+  'projection-relax',
+  'projection-real',
   'tree-transfer',
   'insert-once',
   'locale-register',
