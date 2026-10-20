@@ -3,17 +3,21 @@
  *
  * Declaring the Host packages as `peerDependencies` is NOT enough, and this is
  * the trap this suite exists for: npm 7+ auto-installs a declared peer it cannot
- * find. Measured on this package's real manifest — an `npm install` in a clean
- * directory produced 872 packages, 133 of them `@deepseek-ai`, i.e. a private
- * copy of the whole Host. Those copies would then lead the search plan, so the
- * plugin would load a second Cordis and a second `dsh-fs` instead of the running
- * Host's: two service registries, split instances — the exact failure the peers
- * exist to prevent.
+ * find. Without `peerDependenciesMeta`, installing this package pulls in a
+ * private copy of the whole Host, and the plugin then loads a second Cordis and
+ * a second `dsh-fs` instead of the running Host's: two service registries, split
+ * instances — the exact failure the peers exist to prevent.
  *
- * `peerDependenciesMeta.<name>.optional` is what suppresses that: measured on
- * the same manifest, the install drops to the 6 packages of the real dependency
- * tree and installs no `@deepseek-ai` at all. The declaration is pinned here so
- * a future edit cannot quietly restore the auto-install.
+ * `peerDependenciesMeta.<name>.optional` suppresses that: the install then
+ * contains this plugin, the ssh2 runtime tree, and no `@deepseek-ai` at all. The
+ * declaration is pinned here so a future edit cannot quietly restore the
+ * auto-install.
+ *
+ * The peers are also read by the Host, not just by the package manager: `app-boot`
+ * uses `peerDependencies["@deepseek-ai/dsh"]` as the version gate when a manifest
+ * has no top-level `engines.dsh`, and `readPeerNames`/`routeLinked` uses this
+ * manifest's peer list to decide whether a linked plugin's Host imports route to
+ * the running Host. Deleting the peers to "clean up" would remove both.
  *
  * The suite also pins the counterpart decision: `ssh2` is this plugin's OWN
  * dependency, declared in `dependencies` and left to the package manager that
