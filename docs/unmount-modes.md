@@ -352,9 +352,10 @@ if (detachedSet.has(path)) continue
 视野里）；且不得在行内另起一行重复同一句话。三条都反向验证过：放回旧文案后 2 条变红，
 把常驻行加回去后「not duplicated」变红。
 
-全套：`node tests/run.mjs` **27/27** 通过。裸检出（无环境变量）下 21 个套件运行、
-合计 903 项断言；`lifecycle` / `boot` / `tool-schemas` / `projection-real` 与
-`live` / `acceptance` 共 6 个套件需要 `DSH_CORE_ROOT` 或真实主机，未提供时明确 SKIP。
+全套：`node tests/run.mjs` **28/28** 通过。裸检出（无环境变量）下 22 个套件运行、
+合计 911 项断言；`lifecycle` / `boot` / `tool-schemas` / `projection-real` 与
+`live` / `acceptance` 共 6 个套件需要 `DSH_CORE_ROOT` 或真实主机，未提供时明确 SKIP
+（`DSH_CORE_ROOT` 指向真实装配树时这 6 个跑起 4 个，合计 1133 项、只剩 `live` / `acceptance` 2 个 SKIP）。
 （其中 `tool-schemas` 单独是 160 项 schema 断言，`lifecycle` 与 `boot` 是另外两个套件、
 项数各不相同——别把这几个套件当成「合计 160 项」。）本组相关的 `probe-smoke` 15 项、
 `detach-smoke` 73 项。

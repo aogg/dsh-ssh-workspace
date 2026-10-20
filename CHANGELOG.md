@@ -2,6 +2,76 @@
 
 本文件记录 dsh-ssh-workspace 的版本变更。0.1.16 之前的版本为未公开的本地迭代，未收录。
 
+## 未发布
+
+### 修复
+
+- **宿主包声明为 `peerDependencies` 还不够，必须同时标 `optional`**：npm 7+ 会**自动安装**
+  它找不到的 peer。实测本包的真实清单：在空目录里 `npm install`，装出 **872 个包、其中 133 个
+  `@deepseek-ai`**——即一整份私有宿主副本。这些副本随后排在搜索计划最前面，插件会加载第二个
+  Cordis 和第二个 `dsh-fs`，而不是宿主正在运行的那份，正是「服务实例分裂」。加上
+  `peerDependenciesMeta.<name>.optional: true` 后，同一清单的安装降到 **6 个包**（真实依赖树），
+  不装任何 `@deepseek-ai`。
+
+  仓库的 `.npmrc` 里原本写着 `legacy-peer-deps=true`，把这个问题挡住了，但 **`.npmrc` 不进
+  tarball**（`npm pack` 实测 28 个文件，无 `.npmrc`），所以用户那边的安装一直走的是会展开宿主树
+  的默认行为。
+
+  **`ssh2` 保持在 `dependencies`，不由插件自己检查是否安装**：它随安装本插件的那次安装到来
+  （npm / pnpm / yarn 都如此），万一缺失，由包管理器与解析错误各自报出，插件不在运行时介入。
+
+  验证：`peers-smoke` **9 项**，其中 5 条把 peer 声明本身钉住（宿主包都是 peer、没有一个是
+  普通依赖、每个都标了 optional、meta 表里没有非 peer 的项、`ssh2` 必须留在 `dependencies`）。
+  反向验证：删掉 `peerDependenciesMeta` 后 1 条变红；把 `ssh2` 改成 peer 后 1 条变红。
+  全套 `node tests/run.mjs` **28/28** 通过：裸检出 **911** 项 / 6 套件 SKIP，
+  `DSH_CORE_ROOT` 指向真实装配树时 **1133** 项 / 2 套件 SKIP（仅 `live` 与 `acceptance`）。
+
+### 清理
+
+- **删掉一个从未被调用的函数**：`patch-terminal.js` 里的 `remoteTargetOf(request, owner)`
+  是给「终端请求不带 `cwd`」这一情形准备的兜底，但它自 4581151 起就没被任何代码调用。
+  核实了宿主的三条 `spawnTerminal` 调用点（`dsh-api-terminal-controller`、`dsh-subprocess`、
+  `dsh-terminal-bash`），**每条都显式传 `cwd`**（缺省时各自先 `workingDirectory.ensure()`），
+  所以那条兜底路径在当前宿主上不存在。若上游将来允许不传 `cwd`，此处需要重新加回。
+
+- **去掉 13 个只剩「内部使用」的 `export`**：`resolveAgentPath`（engine）、`sshConfigPath` /
+  `normalizeAuth`（hosts）、`KNOWN_WRITE_MODES` / `isRemoteTempPath`（mode-gate）、
+  `MIRROR_ROOT` / `mirrorRelativeOf` / `learnMirrorAlias`（patch-subprocess）、`SSH_SCHEME`
+  （protocol）、`storePath` / `validateAlias` / `validateHostEntry` / `normalizeAuthForStore`
+  （store）。它们只在本文件内被引用，`export` 让外界误以为是对外契约。**没有任何
+  `import` 引用这 13 个名字**（逐个查过 lib / tests / docs），所以不改变任何行为。
+
+- **未使用的 import 与接口映射**：`routes.js` 的 `formatRemotePath` 从未在该文件使用；
+  `client.js` 的 `API.forward` 是 `/forward` 路由的客户端映射，但客户端只走
+  `forwardSave` / `forwardToggle` 等持久化路由，从不调用它（`/forward` 仅由 agent 工具
+  `ssh_workspace_forward` 经工具层调用，不经过 HTTP）。同一批里 `API.transfer` 也一样。
+
+- **16 个只有定义、没有任何引用的 locale 键**：`hosts.source.store`、`hosts.source.sshConfig`、
+  `hosts.auth.key` / `.password` / `.agent`、`hosts.forgetKeyBusy`、`workspace.disabledMark`、
+  `connections.title` / `.none` / `.connected` / `.broken`、`shells.none`、`forwards.add` /
+  `.adding` / `.localPortLabel`、`transfer.uploadPick`。中文和英文两份词典都已删除，现在
+  **定义 163 个、引用 163 个，一一对应**（此前 179 个定义对 163 个引用）。
+
+  连带影响：`tree-transfer-smoke` 里那组 `locale coverage for transfer.*` 断言是**从词典里
+  扫出来的**，删掉 `transfer.uploadPick` 后该套件由 41 项变 40 项。这不是回归，是断言的输入
+  变少了。
+
+- **`scripts/verify-sftp.mjs` 的两处死代码**：一个 `await import()` 的结果赋给了从未使用的
+  `remoteFs`（且带 `.catch(() => null)`）；删掉它之后 `pluginRoot` 也随之悬空，一并移除。
+  该脚本只做「用真 ssh2 复现上传/下载的暂存与 rename 序列」这一件事，不依赖插件的
+  `remote-fs.js`。
+
+- **仓库根目录遗留的 `.peer-stubs/`**：这是 `tests/peer-stubs.mjs` 早期把 stub 根生成到
+  仓库根时留下的产物。现在代码只写 `tests/.peer-stubs`（`run.mjs:88` 传的是 `here` 下的
+  路径），根目录那份**没有任何代码路径读取**，内容与 `tests/.peer-stubs` 逐字节同名同构、
+  且被 `.gitignore` 的 `node_modules/` 规则覆盖，从未入库。已删除。
+
+### 文档
+
+- `development.md` 的 `peers-smoke` 行改为只描述 peer 声明这一件事，并按实测校正计数：
+  活跃项 903→**911**、真实树 1125→**1133**（`features.md`、`unmount-modes.md`、
+  `acceptance-prompts.md` 同步）。上一条 `912` / `1134` 是先于本轮清理的数字。
+
 ## [0.2.6] - 2026-10-20
 
 ### 文档

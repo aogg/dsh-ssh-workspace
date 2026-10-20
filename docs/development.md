@@ -26,7 +26,7 @@
 | `lib/routes.js` | 浏览器半边的 22 条 HTTP 路由（hosts / save / delete / forget-key / disconnect / test / ls / status / mount / unmount / enable / forward / unforward / forward-save / toggle / delete / remember / probe / settings / transfer / download / upload） |
 | `lib/shell.js` | 远端持久 shell 会话：`cd` / 导出变量 / 后台任务跨调用保留 |
 | `lib/tools.js` | 10 个 `ssh_workspace_*` Agent 工具（schema / 渲染 / 执行） |
-| `lib/peers.js` | 宿主依赖（`@deepseek-ai/*`、`ssh2`）的定位与加载 |
+| `lib/peers.js` | 依赖定位与加载：本包 `node_modules` → `DSH_PEER_ROOT` → 各 profile → 部署自带树 |
 | `lib/client.js` | 浏览器半边：面板、添加工作区流程、标记装饰、全部样式与中英文案 |
 | `lib/patch-projection.js` | **上游临时补丁**（`UPSTREAM-1`）：把 `workingDirectory` 投影单元的 schema 放宽到接受 `ssh://`。上游修好后自动停止生效，见 [upstream-workarounds.md](./upstream-workarounds.md) |
 
@@ -76,15 +76,16 @@ profile 安装（`pnpm install`）会让第 1 步命中 profile 内的解析链�
 ## 冒烟测试与 CI
 
 `tests/` 下是一组按依赖分层的冒烟套件；`node tests/run.mjs` 依次以子进程运行
-全部套件（也可 `node tests/run.mjs live acceptance` 只跑指定套件）。共 27 个套件，
+全部套件（也可 `node tests/run.mjs live acceptance` 只跑指定套件）。共 28 个套件，
 断言数如下（下表按裸检出实测，`DSH_CORE_ROOT` / `DSH_WS_TEST_ALIAS` 未设置时
-6 个套件 SKIP，其余 21 个套件合计 903 项断言；`DSH_CORE_ROOT` 指向真实装配树时
-3 个套件 SKIP，合计 1125 项）。下表的项数是数每个套件打印的 `PASS` 行得到的，
+6 个套件 SKIP，其余 22 个套件合计 911 项断言；`DSH_CORE_ROOT` 指向真实装配树时
+只剩 `live` / `acceptance` 这 2 个 SKIP，合计 1133 项）。下表的项数是数每个套件打印的 `PASS` 行得到的，
 不要与末尾 `=== N passed` 那行相加——`locale-register` 与 `secrets` 的收尾格式不同。
 
 | 套件 | 前置 | 项数 | 覆盖 |
 | --- | --- | --- | --- |
 | `protocol-smoke` | 无 | 27 | `ssh://` 语法、规范化、前缀判定、basename / dirname、`file:` URI |
+| `peers-smoke` | 无 | 9 | 依赖声明本身：宿主包必须是 `peerDependencies`（不能是普通依赖），且每个都标 `peerDependenciesMeta.<name>.optional`——npm 7+ 会自动安装缺失的 peer，实测同一清单会展开 **872 个包、133 个 `@deepseek-ai`** 的私有宿主副本，正是「服务实例分裂」的来源；meta 表不得出现非 peer 项；`ssh2` 必须留在 `dependencies`（随安装本包的那次安装到来，插件不自行检查）；真实解析路径可用且按名记忆化，缺失时错误信息点名 specifier 并列出搜过的根 |
 | `client-shape-smoke` | 无 | 57 | package.json 的 `dsh.client` / `exports` / `files`、bundle 装载约定、`node --check` 解析、停用工作区的会话收集行为、悬停提示文案 |
 | `backdrop-dismiss-smoke` | 无 | 28 | 对话框遮罩的关闭判据：按下与松开都必须落在遮罩（拖选文字松开在遮罩不得关闭）、主键-only（副键 / 中键只弹菜单）、触屏 `pointerup` 报 `button: -1` 仍可关闭、按下出窗松手不留残留标志、三个对话框各自的忙碌门禁、源码接线不得退回 `onClick` |
 | `projection-relax-smoke` | 无 | 54 | `UPSTREAM-1` 上游补丁的逻辑层：放宽后 `ssh://` 通过而空串 / 相对路径仍被拒、`null` 照旧、其它投影单元不动、`register` 包装覆盖两种加载顺序、幂等、卸载只摘包装不动 schema、**退役探测三种结局**（`upstreamFixed` 不打补丁 / 生产顺序就地放宽 / 未注册时挂包装）与 `DSH_SSH_WORKSPACE_DISABLE_UPSTREAM_WORKAROUNDS` 的跳过语义 |
@@ -123,7 +124,7 @@ profile 安装（`pnpm install`）会让第 1 步命中 profile 内的解析链�
 跳过（跳过的套件无法失败，正是这样一次跳过让一个调用了未导入函数的 upload 处理器
 绿着发了出去）。只有需要**真实框架**的三个套件（`lifecycle` / `boot` /
 `tool-schemas`）与需要真实主机的两个（`live` / `acceptance`）仍 SKIP 并给出原因。
-这正是 CI 的形态，23/23 报告成功。
+这正是 CI 的形态，28/28 报告成功。
 CI（`.github/workflows/ci.yml`）在 push / PR 上执行：`npm ci --ignore-scripts`
 （`.npmrc` 的 `legacy-peer-deps` 使锁文件只含 ssh2 运行时树，`@deepseek-ai/*`
 peer 由宿主提供）→ `node --check` 全部 `lib/*.js` → `node tests/run.mjs` →
