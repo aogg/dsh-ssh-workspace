@@ -52,8 +52,10 @@ const {
   WORKAROUND_ID,
   UPSTREAM_FIX,
   DISABLE_ENV,
+  PROBE,
   workaroundsDisabled,
   acceptsRemotePath,
+  probeUpstream,
   relaxSchema,
   relaxDefinition,
   installProjectionRelaxation,
@@ -353,12 +355,57 @@ function rejects (schema, value) {
   const registry = makeRegistry(definition)
   const installed = installProjectionRelaxation(ctxFor(registry), {})
   check('installing against a fixed Host reports upstreamFixed', installed?.upstreamFixed === true)
+  check('...and reports the probe state that proves it', installed?.probe === PROBE.fixed, installed?.probe)
+  check('...and explains why in `detail`', typeof installed?.detail === 'string' && installed.detail !== '', installed?.detail)
   check('...and relaxes nothing in place', installed?.relaxedInPlace === false)
   check('...and does NOT wrap register (a fixed Host needs no interception)',
     Object.hasOwn(registry, 'register') === true && registry.registerCalls === 1)
   check('...while the unit keeps parsing the ssh:// cwd', accepts(registry.registrations.get(RELAXED_KEY).def.wire.viewSchema, SSH_CWD))
 
   uninstallProjectionRelaxation(ctxFor(registry))
+}
+
+// ---------------------------------------------------------------------------
+// 8b. "I cannot see the Host" is NOT "the Host is fine", and NOT "the Host is
+//     broken". These used to be the same `false`, which made a silent
+//     regression possible: a Host that renamed `registrations` would stop being
+//     patched, report nothing, and reproduce the bug the workaround exists to
+//     prevent. Each state below is asserted separately for that reason.
+// ---------------------------------------------------------------------------
+{
+  check('the probe vocabulary is the closed six-state set',
+    JSON.stringify(Object.values(PROBE).sort()) ===
+      JSON.stringify(['already', 'broken', 'disabled', 'fixed', 'pending', 'unprobeable']),
+    JSON.stringify(Object.values(PROBE)))
+
+  // A registry whose table is not a Map: this is what a future Host reshape
+  // looks like from here (renamed field, private field, plain object).
+  const opaque = { register () {}, registerCalls: 0 }
+  const judged = probeUpstream(opaque)
+  check('a registry without a registrations Map is UNPROBEABLE, not "still broken"',
+    judged.state === PROBE.unprobeable, judged.state)
+  check('...and the detail names what is missing', /registrations/u.test(judged.detail), judged.detail)
+  check('...a null registry is unprobeable too', probeUpstream(null).state === PROBE.unprobeable)
+
+  const installed = installProjectionRelaxation(ctxFor(opaque), {})
+  check('installing on an unprobeable Host reports the state instead of pretending it judged',
+    installed?.probe === PROBE.unprobeable, installed?.probe)
+  check('...does not claim upstream is fixed', installed?.upstreamFixed === false)
+  check('...and still wraps register as a precaution', Object.hasOwn(opaque, 'register') === true)
+  uninstallProjectionRelaxation(ctxFor(opaque))
+
+  // The normal production state: still broken.
+  const broken = makeRegistry(directoryDefinition())
+  const brokenInstalled = installProjectionRelaxation(ctxFor(broken), {})
+  check('a still-broken Host is reported as broken (not as fixed, not as unprobeable)',
+    brokenInstalled?.probe === PROBE.broken, brokenInstalled?.probe)
+  uninstallProjectionRelaxation(ctxFor(broken))
+
+  // The unit not being registered yet is its own state, not a judgement.
+  const pending = makeRegistry(undefined)
+  const pendingInstalled = installProjectionRelaxation(ctxFor(pending), {})
+  check('an unregistered unit is pending, not judged', pendingInstalled?.probe === PROBE.pending, pendingInstalled?.probe)
+  uninstallProjectionRelaxation(ctxFor(pending))
 }
 
 // ---------------------------------------------------------------------------
@@ -378,7 +425,8 @@ function rejects (schema, value) {
   const registry = makeRegistry(directoryDefinition())
   const installed = installProjectionRelaxation(ctxFor(registry), { env: { [DISABLE_ENV]: '1' } })
   check('a disabled workaround reports enabled: false', installed?.enabled === false)
-  check('...does not relax the registered schema',
+  check('...and says so in its probe state', installed?.probe === PROBE.disabled, installed?.probe)
+  check('...and does not relax the registered schema',
     rejects(registry.registrations.get(RELAXED_KEY).def.wire.viewSchema, SSH_CWD))
   check('...and does not wrap register', Object.hasOwn(registry, 'register') === true)
 

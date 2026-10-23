@@ -31,20 +31,39 @@ if (!coreRoot) {
   console.log('\n=== 0 passed, 0 failed, 1 suite skipped ===')
   process.exit(0)
 }
-skipWithoutRealPeers('projection real smoke', 'the assembled DSH tree (dsh-session-projection, dsh-working-directory, zod)')
+// Only these four matter here, and three of them are ESM-only host packages that
+// cannot be `require()`d: for those, resolution is all this detector can honestly
+// prove, so it stops there instead of calling a resolvable package broken.
+skipWithoutRealPeers('projection real smoke', 'the assembled DSH tree (dsh-session-projection, dsh-working-directory, zod)', {
+  requires: [
+    '@deepseek-ai/cordis',
+    { name: '@deepseek-ai/dsh-session-projection', introspect: false },
+    { name: '@deepseek-ai/dsh-working-directory', introspect: false },
+    { name: 'zod', introspect: false },
+  ],
+})
 
 const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const requireFromCore = createRequire(path.join(coreRoot, 'noop.cjs'))
 
 let passed = 0
 let failures = 0
-function check (label, ok, detail) {
+/**
+ * @param {string} label - what is being asserted.
+ * @param {boolean} ok - the assertion.
+ * @param {string} [detail] - shown after the label on a PASS and a FAIL.
+ * @param {string} [onFail] - extra guidance shown ONLY on failure. Used to make
+ *   the inverted assertion below announce its own remedy: the person who sees
+ *   it red is by definition not the person who read the banner comment.
+ */
+function check (label, ok, detail, onFail) {
   if (ok) {
     passed += 1
     console.log(`  PASS  ${label}`)
   } else {
     failures += 1
     console.log(`  FAIL  ${label}${detail === undefined ? '' : ` — ${detail}`}`)
+    if (onFail !== undefined) console.log(`        ${onFail}`)
   }
 }
 
@@ -58,6 +77,24 @@ const { installProjectionRelaxation, uninstallProjectionRelaxation } = await imp
 
 const SSH_CWD = 'ssh://qiyk/home/qiyk/test'
 const LOCAL_CWD = path.resolve(pluginRoot)
+
+/**
+ * Printed under a red line in section 1. The whole point of this suite's first
+ * assertions is inverted — they assert a DEFECT — so a failure here has to carry
+ * its own interpretation. A reader who finds a red line in CI has not read the
+ * banner above, and "fix the test" is the wrong reflex by construction.
+ */
+const DELETE_THE_WORKAROUND = [
+  '^^^ THIS IS NOT A REGRESSION. Delete the upstream workaround instead:',
+  '      1. lib/index.js — the `ctx.inject([\'sessionProjections\'], …)` block with the',
+  '         `UPSTREAM WORKAROUND #1` banner, and the patch-projection.js import above it;',
+  '      2. lib/patch-projection.js;',
+  '      3. tests/projection-relax-smoke.mjs and this file (tests/projection-real-smoke.mjs);',
+  '         remove `projection-relax` / `projection-real` from tests/run.mjs SUITES;',
+  '      4. docs/upstream-workarounds.md, and its rows in docs/README.md, README.md, README.en.md;',
+  '      5. the `archive` entry in CHANGELOG.md.',
+  '    Runbook: docs/upstream-workarounds.md',
+].join('\n        ')
 
 /** Mount the two host services in the order the roster uses. */
 function mountHost () {
@@ -89,15 +126,20 @@ function probe (ctx, cwd) {
 //    there means the upstream workaround has done its job and must be DELETED
 //    (lib/patch-projection.js, its index.js block, this suite, and
 //    docs/upstream-workarounds.md). It is not a regression.
+//
+//    The failure text says all of that too (DELETE_THE_WORKAROUND below): the
+//    banner only helps whoever opens this file, and the person looking at a red
+//    CI line is usually not that person.
 // ---------------------------------------------------------------------------
 const { ctx } = mountHost()
 {
   const result = probe(ctx, SSH_CWD)
   check('the real workingDirectory viewSchema rejects an ssh:// cwd (the reported bug)',
-    result.ok === false && /Invalid input/.test(result.message), result.ok ? `unexpectedly passed: ${result.value}` : result.message)
+    result.ok === false && /Invalid input/.test(result.message), result.ok ? `unexpectedly passed: ${result.value}` : result.message,
+    DELETE_THE_WORKAROUND)
   check('...while the same schema accepts a local absolute path', probe(ctx, LOCAL_CWD).ok === true)
   check('=> the UPSTREAM-1 workaround is therefore still load-bearing on this Host build',
-    result.ok === false)
+    result.ok === false, undefined, DELETE_THE_WORKAROUND)
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +172,8 @@ const { ctx } = mountHost()
   check('the relaxation found the already-registered unit in place', installed?.relaxedInPlace === true)
   check('...and did not conclude the Host was already fixed (it is not, on this build)',
     installed?.upstreamFixed === false)
+  check('...and reported the judgement as `broken`, which is what makes it actionable',
+    installed?.probe === 'broken', installed?.probe)
 
   const restored = probe(ctx, SSH_CWD)
   check('restore() now yields the ssh:// cwd', restored.ok === true && restored.value === SSH_CWD,

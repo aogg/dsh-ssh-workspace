@@ -116,6 +116,55 @@ check(
     /node_modules/.test(missing.message),
   missing === null ? 'did not throw' : missing.message
 )
+// The failure has two very different owners, and the message is the only place
+// a user learns which one to chase: a Host peer comes from the running DSH
+// installation, while `ssh2` comes from whatever installed THIS plugin. Calling
+// `ssh2` a peer points the reader at `peerDependencies`, where nothing is wrong
+// and nothing can be fixed.
+check(
+  'the missing-peer message calls the package a peer, and points at the Host',
+  missing !== null &&
+    /DSH peer package/.test(missing.message) &&
+    /running DSH host/i.test(missing.message),
+  missing === null ? 'did not throw' : missing.message
+)
+// A message that reads as broken English is a message people skim past; the
+// article has to agree with the noun it introduces.
+check(
+  'the missing-peer message reads as a sentence',
+  missing !== null &&
+    /cannot resolve the DSH peer package "/.test(missing.message) &&
+    !/\bthe the\b/i.test(missing.message),
+  missing === null ? 'did not throw' : missing.message
+)
+
+const missingDependency = (() => {
+  try {
+    requirePeer('@deepseek-ai/definitely-not-installed', { kind: 'dependency' })
+    return null
+  } catch (error) {
+    return error
+  }
+})()
+check('a missing own dependency throws', missingDependency instanceof Error)
+check(
+  'the missing-dependency message does NOT call the package a peer',
+  missingDependency !== null && !/peer package/i.test(missingDependency.message),
+  missingDependency === null ? 'did not throw' : missingDependency.message
+)
+check(
+  'the missing-dependency message names the install command that fixes it',
+  missingDependency !== null && /npm (ci|install)/.test(missingDependency.message),
+  missingDependency === null ? 'did not throw' : missingDependency.message
+)
+// The role must reach the real caller, not just the helper: engine.js loads
+// `ssh2` through this module, so a missing ssh2 has to read as a dependency.
+const engineSource = readFileSync(path.join(pluginRoot, 'lib', 'engine.js'), 'utf8')
+check(
+  'engine.js loads ssh2 as a dependency, so a missing tree is not blamed on the Host',
+  /requirePeer\(\s*['"]ssh2['"]\s*,\s*\{\s*kind:\s*['"]dependency['"]/.test(engineSource),
+  engineSource.match(/requirePeer\([^)]*\)/)?.[0] ?? 'no requirePeer call found'
+)
 
 console.log(`\n=== ${passed} passed, ${failures} failed ===`)
 process.exit(failures === 0 ? 0 : 1)

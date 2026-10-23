@@ -26,8 +26,12 @@ if (!coreRoot) {
   process.exit(0)
 }
 // This suite drives the host's own framework (Cordis service ordering), so a
-// generated stub root cannot stand in for it: skip rather than crash.
-skipWithoutRealPeers('lifecycle smoke', 'a real assembled DSH tree (@deepseek-ai/cordis and dsh-fs)')
+// generated stub root cannot stand in for it: skip rather than crash. The
+// package list is explicit — this suite mounts lib/index.js, which registers the
+// agent tools, so a missing `dsh-tools` would crash here rather than skip.
+skipWithoutRealPeers('lifecycle smoke', 'a real assembled DSH tree (@deepseek-ai/cordis, dsh-fs and dsh-tools)', {
+  requires: ['@deepseek-ai/cordis', '@deepseek-ai/dsh-fs', '@deepseek-ai/dsh-tools'],
+})
 // Let the plugin's own requirePeer find the same tree (see lib/peers.js).
 process.env.DSH_PEER_ROOT = [coreRoot, process.env.DSH_PEER_ROOT].filter(Boolean).join(path.delimiter)
 
