@@ -27,8 +27,9 @@
 | `lib/shell.js` | 远端持久 shell 会话：`cd` / 导出变量 / 后台任务跨调用保留 |
 | `lib/tools.js` | 10 个 `ssh_workspace_*` Agent 工具（schema / 渲染 / 执行） |
 | `lib/peers.js` | 依赖定位与加载：本包 `node_modules` → `DSH_PEER_ROOT` → 各 profile → 部署自带树 |
+| `lib/diagnostics.js` | 面向用户的诊断环形缓冲（固定 40 条）：连接 / 断连 / 重连 / 降级 / 上游补丁结论。宿主无 console exporter 且 `debug` 被默认级别丢弃，所以这些信息只能从这里经由 status 工具与面板路由呈现 |
 | `lib/client.js` | 浏览器半边：面板、添加工作区流程、标记装饰、全部样式与中英文案 |
-| `lib/patch-projection.js` | **上游临时补丁**（`UPSTREAM-1`）：把 `workingDirectory` 投影单元的 schema 放宽到接受 `ssh://`。上游修好后自动停止生效，见 [upstream-workarounds.md](./upstream-workarounds.md) |
+| `lib/patch-projection.js` | **上游临时补丁**（`UPSTREAM-1`）：把 `workingDirectory` 投影单元的 schema 放宽到接受 `ssh://`。上游修好后自动停止生效并报出六态结论，见 [upstream-workarounds.md](./upstream-workarounds.md) 与 [upstream-workaround-pattern.md](./upstream-workaround-pattern.md) |
 
 ## 上游临时补丁
 
@@ -37,12 +38,22 @@
 [upstream-workarounds.md](./upstream-workarounds.md)，并且必须满足三条：
 
 1. **可 grep 的稳定 id**（`UPSTREAM-<n>-<package>-<subject>`），出现在代码框注、文档与 CHANGELOG；
-2. **自动退役**：宿主修好后补丁自己不再生效，并在启动日志里说明——靠「探测宿主的行为」而不是
-   「比对版本号」，因为版本号在 patch 级别不可靠，而行为是合同；
+2. **自动退役**：宿主修好后补丁自己不再生效，并把结论送到一个**人能看到的地方**——靠「探测宿主的
+   行为」而不是「比对版本号」，因为版本号在 patch 级别不可靠，而行为是合同；
 3. **测试信号**：对应套件在宿主修好的那次升级上变红，且变红的语义是「删掉我」而不是「回归」。
 
-第三条最容易被写反。`tests/projection-real-smoke.mjs` 的第一节断言「缺陷仍然存在」，
-就是在替这条规则站岗：它红的那天，正确的动作是删代码，不是修测试。
+第 2 条里的「人能看到的地方」有讲究：**不是 `ctx.logger`**。本部署没有 console exporter，
+`info` 进一个无人读取的环形缓冲，`debug` 低于所有默认级别。所以补丁的结论走
+`engine.noteUpstreamWorkaround()` → `ssh_workspace_status` 的 `upstreamWorkarounds` 字段，
+以及一条 `upstream` 事件。同理，探测结论是**六态状态而不是布尔**：
+"探不到宿主" 与 "宿主仍然是坏的" 必须能分开，否则补丁静默失效时没有任何信号。
+
+第 3 条最容易被写反。`tests/projection-real-smoke.mjs` 的第一节断言「缺陷仍然存在」，
+就是在替这条规则站岗：它红的那天，正确的动作是删代码，不是修测试。为此那条断言的失败信息
+**自带五步删除清单**（`DELETE_THE_WORKAROUND`）——看到红的人不一定是读过文件头注释的人。
+
+完整的方法论（适用判定、七件套、四条反模式、成本边界）见
+[upstream-workaround-pattern.md](./upstream-workaround-pattern.md)。
 
 用一个环境变量可以在不装新版本的情况下验证某条补丁是否仍承重：
 
@@ -77,15 +88,36 @@ profile 安装（`pnpm install`）会让第 1 步命中 profile 内的解析链�
 - **宿主半边**（`lib/*.js`，除 client）与 `client.js` 的**样式/文案**：改动进入已安装位置后重启 DSH 生效。调试源码检出的宿主半边可用 DSH 自带的 Electron 运行时：以 `ELECTRON_RUN_AS_NODE=1` 运行宿主源码脚本，并设 `DSH_PEER_ROOT` 指向 DSH 安装目录的 `node_modules`（参考 [architecture.md](./architecture.md) 的「peer 解析」顺序）。
 - **浏览器半边**：`client.js` 由 DSH 前端按单文件包加载，改动需重装进 profile 并重启 DSH，再重载页面；文件头注释里写明其加载协议，无独立构建管线。
 
-日志走 Cordis logger（`ctx.logger`），前缀 `ssh-workspace:`；面向模型的能力公告见 `lib/index.js` 的 `SSH_WORKSPACE_GUIDANCE`。
+### 日志与诊断
+
+**先说一个反直觉的事实**：这个部署里 `ctx.logger.debug(...)` 是**不可观测的**，不要用它做诊断。
+
+- 宿主没有安装任何 console exporter；
+- `ctx.logger` 的消息进的是一个环形缓冲（`LoggerService.buffer`），而全仓**没有任何读取它的地方**；
+- `debug` 的级别是 3，所有 exporter 的默认级别是 1，所以它在进入那个缓冲之前就被丢弃了。
+
+也就是说，写一行 `debug()` 在 review 里像"加了日志"，实际效果与写一行注释等价。`info` / `warn` / `error` 比 `debug` 好一点（能进缓冲），但同样没有出口——除了启动失败时 `app-boot` 会把 warn/error 附在 `StartupError` 上。
+
+**真正能被用户看到的是两处**：
+
+| 出口 | 内容 |
+| --- | --- |
+| `ssh_workspace_status` 工具 | 挂载、连接、转发、持久 shell，以及最近的 `events`（连接 / 断连 / 重连 / 降级） |
+| 面板的 status 路由（`/api/dsh-ssh-workspace/status`） | 同上，供浏览器半边使用 |
+
+这些事件记在 `lib/diagnostics.js`：一个固定容量（40 条）的环形缓冲，由引擎在状态转换处写入。要加新的诊断信息，往这里记，而不是 `logger.debug`。容量有上限是有意的——长期开着的会话会反复重连，无界的日志就是 Host 进程里的内存泄漏。
+
+`ctx.logger` 仍然用于启动期的一次性信息（例如"注册了 N 条路由"），那些是给人看的、且只在启动时出现一次。
+
+面向模型的能力公告见 `lib/index.js` 的 `SSH_WORKSPACE_GUIDANCE`。
 
 ## 冒烟测试与 CI
 
-`tests/` 下是一组按依赖分层的冒烟套件；`node tests/run.mjs` 依次以子进程运行
-全部套件（也可 `node tests/run.mjs live acceptance` 只跑指定套件）。共 28 个套件，
+`tests/` 下是一组按依赖分层的冒烟套件；`npm test`（即 `node tests/run.mjs`）依次以子进程运行
+全部套件（也可 `node tests/run.mjs live acceptance` 只跑指定套件）。共 30 个套件，
 断言数如下（下表按裸检出实测，`DSH_CORE_ROOT` / `DSH_WS_TEST_ALIAS` 未设置时
-6 个套件整体 SKIP，其余 22 个套件合计 911 项断言；`DSH_CORE_ROOT` 指向真实装配树时
-`projection-real` / `lifecycle` / `tool-schemas` 三个跑起来，合计 **1133** 项，此时只剩
+6 个套件整体 SKIP，其余 24 个套件合计 989 项断言；`DSH_CORE_ROOT` 指向真实装配树时
+`projection-real` / `lifecycle` / `tool-schemas` / `boot` 四个跑起来，合计 **1212** 项，此时只剩
 **3 条 SKIP 行**：`live` 与 `acceptance` 整体跳过，加上 `boot-smoke` 内部那段需要真实主机的
 远端检查——`boot-smoke` 本身仍在运行并贡献 29 项断言，所以「跳过套件数」是 2 个、
 SKIP 行是 3 条，两者不要混用）。下表的项数是数每个套件打印的 `PASS` 行得到的，
@@ -94,11 +126,13 @@ SKIP 行是 3 条，两者不要混用）。下表的项数是数每个套件打
 | 套件 | 前置 | 项数 | 覆盖 |
 | --- | --- | --- | --- |
 | `protocol-smoke` | 无 | 27 | `ssh://` 语法、规范化、前缀判定、basename / dirname、`file:` URI |
-| `peers-smoke` | 无 | 9 | 依赖声明本身：宿主包必须是 `peerDependencies`（不能是普通依赖），且每个都标 `peerDependenciesMeta.<name>.optional`——否则 npm 7+ 会把它们装成一份私有宿主副本，正是「服务实例分裂」的来源；meta 表不得出现非 peer 项；`ssh2` 必须留在 `dependencies`；真实解析路径可用且按名记忆化，缺失时错误信息点名 specifier 并列出搜过的根。peer 声明也是宿主读取的数据：`app-boot` 的 `unmetRequirements` 在缺 `engines.dsh` 时用它做版本门禁，`routeLinked` 用 `readPeerNames` 决定 linked 安装路由到宿主哪一份依赖 |
+| `peers-smoke` | 无 | 15 | 依赖声明本身：宿主包必须是 `peerDependencies`（不能是普通依赖），且每个都标 `peerDependenciesMeta.<name>.optional`——否则 npm 7+ 会把它们装成一份私有宿主副本，正是「服务实例分裂」的来源；meta 表不得出现非 peer 项；`ssh2` 必须留在 `dependencies`；真实解析路径可用且按名记忆化，缺失时错误信息点名 specifier 并列出搜过的根。**失败文案按角色分流**：缺宿主 peer 与缺本包自己的依赖是两种不同的修复，前者归宿主、后者归装本包的包管理器，因此 `requirePeer` 收 `kind` 参数，且 `engine.js` 加载 `ssh2` 时必须传 `'dependency'`——否则用户会被引去查 `peerDependencies`，那里没有错也没有修法。peer 声明也是宿主读取的数据：`app-boot` 的 `unmetRequirements` 在缺 `engines.dsh` 时用它做版本门禁，`routeLinked` 用 `readPeerNames` 决定 linked 安装路由到宿主哪一份依赖 |
+| `peer-mode-smoke` | 无 | 24 | 检测器本身。它是所有 peer 套件的信任根，答错时没有别的套件会发现，所以用四态合成树单独驱动：生成根必须整棵报 `stub` 且每个包都带 `__dshStub`（漏标的 stub 会被当成 REAL，比没有 stub 更糟）；真包与替身并存必须报 `mixed` 而非 `real`（旧检测器只看 `dsh-fs`，随后套件在没看过的那个 stub 上崩）；**解析到但加载抛错必须是 `broken` 并保留解析路径与错误**（旧代码把它报成「没装」，把人引向一次改变不了任何东西的安装）；`absent` 真的缺席；只查套件声明的包（缺无关 peer 不得连带跳过）；端到端两种结局——装坏的树让套件 **FAIL(1)** 且打印真实原因、stub 树 SKIP(0)，两者都不得执行到断言；未设置 `DSH_CORE_ROOT` 报 `absent` |
+| `diagnostics-smoke` | 无 | 36 | 面向用户的诊断环形缓冲：条目字段与毫秒时间戳、无别名时不写空字段、**容量上限丢最旧留最新**（含"恰好等于容量"的边界）、`list()` 交出副本因而调用方改不动历史、`list(n)` 取最新 n 条、`clear()`、记录永不抛（循环引用 / Symbol / 非法 kind / 坏容量都不得让被观测的操作失败）、kind 词表封闭且覆盖连接 / 断连 / 重连 / 降级 / 转发。还钉住上游补丁结论必须一路送到状态面（引擎字段 + 事件 + 两个 status 出口 + `index.js` 的接线），因为"算出来了但没人接手"正是这轮修掉的缺陷形态。最后三条钉住"为什么要这个模块"：引擎必须往这里记连接事件，且不得改用 `logger.debug`——本宿主没有 console exporter、`debug` 级别低于所有 exporter 默认级别，写进去等于没写 |
 | `client-shape-smoke` | 无 | 57 | package.json 的 `dsh.client` / `exports` / `files`、bundle 装载约定、`node --check` 解析、停用工作区的会话收集行为、悬停提示文案 |
 | `backdrop-dismiss-smoke` | 无 | 28 | 对话框遮罩的关闭判据：按下与松开都必须落在遮罩（拖选文字松开在遮罩不得关闭）、主键-only（副键 / 中键只弹菜单）、触屏 `pointerup` 报 `button: -1` 仍可关闭、按下出窗松手不留残留标志、三个对话框各自的忙碌门禁、源码接线不得退回 `onClick` |
-| `projection-relax-smoke` | 无 | 54 | `UPSTREAM-1` 上游补丁的逻辑层：放宽后 `ssh://` 通过而空串 / 相对路径仍被拒、`null` 照旧、其它投影单元不动、`register` 包装覆盖两种加载顺序、幂等、卸载只摘包装不动 schema、**退役探测三种结局**（`upstreamFixed` 不打补丁 / 生产顺序就地放宽 / 未注册时挂包装）与 `DSH_SSH_WORKSPACE_DISABLE_UPSTREAM_WORKAROUNDS` 的跳过语义 |
-| `tree-transfer-smoke` | 无 | 41 | 目录树上传、原子发布、递归与失败路径 |
+| `projection-relax-smoke` | 无 | 66 | `UPSTREAM-1` 上游补丁的逻辑层：放宽后 `ssh://` 通过而空串 / 相对路径仍被拒、`null` 照旧、其它投影单元不动、`register` 包装覆盖两种加载顺序、幂等、卸载只摘包装不动 schema、**退役探测三种结局**（`upstreamFixed` 不打补丁 / 生产顺序就地放宽 / 未注册时挂包装）与 `DSH_SSH_WORKSPACE_DISABLE_UPSTREAM_WORKAROUNDS` 的跳过语义 |
+| `tree-transfer-smoke` | 无 | 40 | 目录树上传、原子发布、递归与失败路径 |
 | `insert-once-smoke` | 无 | 18 | 拖入文件的 chip 只插入一次（HMR 重复插入的回归） |
 | `locale-register-smoke` | 无 | 21 | 中英词典注册、重复注册不污染、`translate` 回落 |
 | `detach-smoke` | 无 | 73 | 停用清单读写与脏数据退化、路径包含判定、`ctx.fs` 十个方法逐个断言被拒、重新启用两条路径、shell / terminal 拒绝且不拨号、工作区外照常可用、跨分区写入隔离、启用不得经过围栏探测、**沙箱模式围栏（`read-only` 拒写且不拨号）、三个围栏错误码的可分性、`/tmp` 对写围栏可达而对停用 / 探针仍按原始挂载根** |
@@ -118,7 +152,7 @@ SKIP 行是 3 条，两者不要混用）。下表的项数是数每个套件打
 | `lifecycle-smoke` | `DSH_CORE_ROOT` | SKIP | 真实 Cordis 下 5 种服务装配顺序的接管 / 路由 / 工具注册（期望 22 路由 / 10 工具） |
 | `boot-smoke` | `DSH_CORE_ROOT`（远端段另需 `DSH_WS_TEST_ALIAS`） | SKIP | 生产顺序引导、`ctx.fs` 接管与还原、工具端到端、挂载 → 停用 → 读被拒 → 启用往返 |
 | `tool-schemas-smoke` | `DSH_CORE_ROOT` | SKIP | 工具 schema 过真实 `assertSupportedJsonSchema` + render 冒烟（160 项） |
-| `projection-real-smoke` | `DSH_CORE_ROOT` | SKIP | `UPSTREAM-1` 补丁对**真实** `SessionProjectionRegistry` + `WorkingDirectoryService` + 真实 zod，按生产顺序装配：复现 `Invalid input` → 打补丁后 `restore` / `viewCheckpoint` 双双通过、卸载后已打开的 ssh:// 会话仍可读 |
+| `projection-real-smoke` | `DSH_CORE_ROOT` | SKIP | `UPSTREAM-1` 补丁对**真实** `SessionProjectionRegistry` + `WorkingDirectoryService` + 真实 zod，按生产顺序装配：复现 `Invalid input` → 打补丁后 `restore` / `viewCheckpoint` 双双通过 → 报告 `probe: 'broken'` → 卸载后已打开的 ssh:// 会话仍可读。第一节断言的是**缺陷仍然存在**，红 = 删补丁（失败信息自带删除清单） |
 | `live-smoke` | `DSH_WS_TEST_ALIAS`（peers 可解析） | SKIP | 远端 SFTP 全量契约、写围栏、错误语义、原子写、symlink |
 | `acceptance-smoke` | `DSH_CORE_ROOT` + `DSH_WS_TEST_ALIAS` | SKIP | 经补丁后 `ctx.fs` 的端到端验收（挂载 → 读写 → 围栏 → 卸载） |
 
@@ -131,13 +165,30 @@ SKIP 行是 3 条，两者不要混用）。下表的项数是数每个套件打
 裸检出（无任何环境变量）`node tests/run.mjs` 会跑**依赖 `routes.js` / `remote-fs.js`
 的那些套件**——`tests/peer-stubs.mjs` 自动生成最小 peer stub 根，让它们真正运行而不是
 跳过（跳过的套件无法失败，正是这样一次跳过让一个调用了未导入函数的 upload 处理器
-绿着发了出去）。只有需要**真实框架**的三个套件（`lifecycle` / `boot` /
-`tool-schemas`）与需要真实主机的两个（`live` / `acceptance`）仍 SKIP 并给出原因。
-这正是 CI 的形态，28/28 报告成功。
+绿着发了出去）。只有需要**真实框架**的四个套件（`lifecycle` / `boot` / `tool-schemas` /
+`projection-real`）与需要真实主机的两个（`live` / `acceptance`）仍 SKIP 并给出原因。
+这正是 CI 的形态，30/30 报告成功。
+
+这些套件靠 `tests/support/peer-mode.mjs` 判断手上这棵树能不能证明它们要证明的事。
+它对每个包给出四态，其中两态的差别很关键：
+
+| 状态 | 含义 | 套件行为 |
+| --- | --- | --- |
+| `real` | 宿主自己的包 | 运行，证据有效 |
+| `stub` | `tests/peer-stubs.mjs` 生成的形似替身 | SKIP（exit 0） |
+| `absent` | 该 specifier 解析不到 | SKIP（exit 0） |
+| `broken` | 解析到了，但加载时抛错（通常是它自己的传递 peer 缺失） | **FAIL（exit 1）** |
+
+`broken` 不跳过是刻意的：跳过一棵装坏的树，等于给一个确实出错的环境发绿；而把它报成
+「没装」（旧代码的做法）会把读者引向一次改变不了任何东西的安装。整树判定为 `real`
+要求所查的每个包都是真的，真包与替身并存报 `mixed`。每个套件只声明自己真正需要的包
+（`{ requires: [...] }`），所以一棵缺了无关 peer 的树不会连带跳过本可运行的套件。
+检测器自身由 `tests/peer-mode-smoke.mjs` 用四态合成树覆盖——它是所有 peer 套件的信任根，
+答错时没有别的套件会发现。
 CI（`.github/workflows/ci.yml`）在 push / PR 上执行：`npm ci --ignore-scripts`
 （`.npmrc` 的 `legacy-peer-deps` 使锁文件只含 ssh2 运行时树，`@deepseek-ai/*`
-peer 由宿主提供）→ `node --check` 全部 `lib/*.js` → `node tests/run.mjs` →
-`node scripts/check-doc-links.mjs` → `npm pack --dry-run`。
+peer 由宿主提供）→ `npm run lint` → `npm test` → `npm run check:docs` →
+`npm pack --dry-run`，与本地 `npm run check` 是同一组命令。
 
 ## 文档链接
 

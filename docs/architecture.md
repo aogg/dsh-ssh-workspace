@@ -293,14 +293,21 @@ const directorySchema = z.string().min(1).refine(isAbsolute).nullable()
 以覆盖「插件先加载、单元后注册」的重载/测试顺序。
 
 放宽只有 `ssh://` 一种形态：相对路径与空串照旧被拒，`null` 照旧通过，其它投影单元不动。
-回归测试是 `tests/projection-relax-smoke.mjs`（54 项，逻辑）与 `tests/projection-real-smoke.mjs`
-（17 项，真实 `SessionProjectionRegistry` + `WorkingDirectoryService` + 真实 zod，按生产顺序
+回归测试是 `tests/projection-relax-smoke.mjs`（66 项，逻辑）与 `tests/projection-real-smoke.mjs`
+（18 项，真实 `SessionProjectionRegistry` + `WorkingDirectoryService` + 真实 zod，按生产顺序
 装配）。两者的反向验证都做过：禁用修复后分别有 9 条与 3 条断言变红。
 
 这是一条**上游临时补丁**（`UPSTREAM-1-working-directory-isAbsolute`），不是插件的能力：
 上游把 `refine(isAbsolute)` 改成 `refine((value) => isAbsolute(value))` 后它就该消失。
-补丁会自己发现这一点——安装时先用一个 `ssh://` 值探测已注册的 schema，能通过就什么都不打，
-只打一行 INFO。登记与删除步骤见 [upstream-workarounds.md](./upstream-workarounds.md)。
+补丁会自己发现这一点——安装时先用一个 `ssh://` 值探测已注册的 schema，把结论记成一个显式状态
+（`fixed` / `broken` / `pending` / `already` / `unprobeable` / `disabled`），而**不是**一个布尔：
+"探不到宿主" 与 "宿主仍然是坏的" 必须能区分开，否则补丁静默失效时没有任何信号。
+
+结论经引擎的 `noteUpstreamWorkaround()` 落到 `ssh_workspace_status` 的 `upstreamWorkarounds`
+与一条 `upstream` 事件上——**不走 `ctx.logger`**，因为本部署没有 console exporter，
+写进 logger 等于写进注释（见 [diagnostics.js](../lib/diagnostics.js) 的模块说明）。
+登记与删除步骤见 [upstream-workarounds.md](./upstream-workarounds.md)，
+模式本身见 [upstream-workaround-pattern.md](./upstream-workaround-pattern.md)。
 
 ## 工作区登记
 

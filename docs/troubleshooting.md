@@ -97,6 +97,19 @@ const directorySchema = z.string().min(1).refine(isAbsolute).nullable()
 
 ## 连接问题
 
+**先看诊断历史**：`ssh_workspace_status` 的 `events` 字段记录最近 40 条状态转换（连接、
+断连、重连、降级），最新的在最后。它通常是「刚才发生了什么」最快的答案：一条 `disconnect`
+带时间戳，比读日志快得多——何况这个部署里 `ctx.logger` 根本没有出口（宿主不装 console
+exporter，`debug` 又被默认级别丢弃），见 [development.md](./development.md#日志与诊断)。
+
+`degraded` 尤其值得注意，它表示功能悄悄降级了：
+
+- `inotifywait watcher ended; fell back to polling` —— 文件树改为轮询，同一秒内等长的连续
+  改写可能不再触发刷新；
+- `stream channel unavailable` —— 大文件读取退回了共享 SFTP 通道，会拖慢同连接上的其它操作。
+
+两者都不影响正确性，但会让"为什么没反应 / 为什么变慢了"有据可查。
+
 按以下顺序排查：
 
 1. **面板「测试连接」**：先在「远程工作区」面板对目标主机实测一次，成功/失败会以顶部 toast 明示，是成本最低的定位手段。

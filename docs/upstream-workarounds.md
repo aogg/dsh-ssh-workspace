@@ -12,8 +12,10 @@
 
 - 一个**稳定 id**（形如 `UPSTREAM-1-working-directory-isAbsolute`），全仓库可 grep；
 - 一段**代码内标记**，就在被改的那几行旁边；
-- 一个**自动退役信号**：上游修好后补丁自己不再生效，并在日志里说出来；
+- 一个**自动退役信号**：上游修好后补丁自己不再生效，并在状态接口里说出来；
 - 一个**测试信号**：对应的套件在上游修好的那次升级上变红，红的意思是「删掉我」。
+
+> 抽象成可复用方法的部分见 [upstream-workaround-pattern.md](./upstream-workaround-pattern.md)。本页是这个方法在本仓库唯一实例上的具体登记。
 
 ## 登记表
 
@@ -68,18 +70,39 @@ const directorySchema = z$1.string().min(1).refine((value) => isAbsolute(value))
 
 **自动信号（首选）**：上游修好后，`installProjectionRelaxation` 会先用一个
 `ssh://` 值探测已注册的 schema；能通过就**什么都不打**，返回
-`upstreamFixed: true`，并打一行 INFO：
+`upstreamFixed: true` 与 `probe: 'fixed'`。
+
+这个结论**不走 `ctx.logger`**——本部署没有 console exporter，`info` 进一个无人读取的环形缓冲，
+`debug` 更是低于所有默认级别。所以它落在两个真正能到达的地方：
 
 ```
-ssh-workspace: UPSTREAM-1-working-directory-isAbsolute is no longer needed — …
+ssh_workspace_status → upstreamWorkarounds[]   # 每次启动都重建的当前状态表
+ssh_workspace_status → events[]                # 其中 kind: 'upstream' 的那条
+面板 status 路由      → upstreamWorkarounds[]
+```
+
+状态工具会把这一条直接渲染成人话：
+
+```
+upstream workaround OBSOLETE: UPSTREAM-1-working-directory-isAbsolute — 上游 schema 已接受 ssh://，删掉它
 ```
 
 看到这行就可以删了。注意它**不会**误判成自己的补丁：本模块放宽过的 schema 带
 `Symbol.for('dsh-ssh-workspace.projection.schema')` 标记，探测时被排除。
 
+**"探不动"是独立的一种状态，不是"没修"**。如果宿主改了内部形状（例如
+`registry.registrations` 不再是 `Map`），探测会返回 `probe: 'unprobeable'` 而不是静默当作缺陷仍在；
+它同时进 `events`（`cannot judge this Host`）并在状态里显示。这种情况下补丁仍按保险装上，
+但它已经无法判断自己在退役之后是否还有必要——**看到 `unprobeable` 要当成警告处理**，
+回到本节重新判断即可。
+
+完整状态集：`fixed`（可删）/ `broken`（仍承重）/ `pending`（单元还没注册，正常）/
+`already`（本进程内已由另一次安装放宽）/ `unprobeable`（无法判断）/ `disabled`（被环境变量关掉）。
+
 **测试信号**：`tests/projection-real-smoke.mjs` 第一节断言「缺陷仍然存在」（未放宽的
 真实 schema 必须拒绝 `ssh://`）。上游修好后这一节变红——**红在这里表示「workaround
-可以删了」，不是回归**。`tests/projection-relax-smoke.mjs` 的对应断言同理。
+可以删了」，不是回归**，且失败信息里直接印着五步删除清单。`tests/projection-relax-smoke.mjs`
+的对应断言同理。
 
 **手工信号**（不装新版本也能验）：
 
@@ -94,8 +117,8 @@ DSH_SSH_WORKSPACE_DISABLE_UPSTREAM_WORKAROUNDS=1   # 重启 DSH
 | 历史正常加载 | 上游已修好，删掉 workaround |
 | 报「历史加载失败」 | workaround 仍在承重，保留 |
 
-这个开关只跳过上游 workaround，不影响插件的任何其它接管；跳过时会打一行 WARN
-说明「存量 ssh:// 会话将加载失败」。
+这个开关只跳过上游 workaround，不影响插件的任何其它接管。跳过这个事实同样会出现在
+`upstreamWorkarounds` 里（`probe: 'disabled'`），不会只写进一条没人读的日志。
 
 ### 删除步骤
 
@@ -108,7 +131,12 @@ DSH_SSH_WORKSPACE_DISABLE_UPSTREAM_WORKAROUNDS=1   # 重启 DSH
    的文档索引里去掉这一行；
 5. 更新 `docs/architecture.md` 的「一处补丁打不到的地方：按值捕获的 schema」一节——
    该节描述的是缺陷本身，删掉补丁后可以整节移除，或改成「宿主已修复」的一行说明；
-6. `CHANGELOG.md` 记一条「移除 UPSTREAM-1 临时补丁」。
+6. `lib/engine.js`：删掉 `upstreamWorkarounds` 字段与 `noteUpstreamWorkaround()`；
+   `lib/tools.js` 的 status 输出与 `lib/routes.js` 的 status 路由去掉 `upstreamWorkarounds`，
+   `lib/diagnostics.js` 去掉 `KINDS.upstream`（连同 `tests/diagnostics-smoke.mjs` 里对应的断言）；
+7. [upstream-workaround-pattern.md](./upstream-workaround-pattern.md) 的「本仓库的现状」
+   一节改成「当前没有登记在案的补丁」——**那一页不要删**，它讲的是方法，不是这个实例；
+8. `CHANGELOG.md` 记一条「移除 UPSTREAM-1 临时补丁」。
 
 第 2 步之前先确认第 1 步的 import 已删：ESM 对缺失文件是硬错误，不会静默。
 
