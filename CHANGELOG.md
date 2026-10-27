@@ -7,6 +7,7 @@
 ### 新增
 
 - **局域网部署支持（`allowLan`）**：新增插件配置 `allowLan`（默认 `false`，行为与文案完全不变）与可选 `allowedHosts`。webserver 绑定 `0.0.0.0`、浏览器从局域网访问时，路由此前一律 `forbidden: loopback-only`；开启后来源地址放宽到私网段（IPv4 RFC1918、IPv6 ULA/链路本地，公网仍拒），`Host` 头改为必须匹配本机真实网卡地址 + 端口（`os.networkInterfaces()` 收集，回环拼写始终有效），`allowedHosts` 可并入局域网主机名等额外值——防 DNS-rebinding 语义保留，不匹配的 Host 仍以 `forbidden: unexpected Host header …` 拒绝并区分原因。
+- **「新建本地工作区」的应用内浏览降级**：宿主组合的是 browse 目录选择后端（只有 `list` / `createDirectory` 原语）时，「新建本地工作区」此前每次都先调原生 `pick` 动词、失败后把「directory picker failed: … needs the native capability; the composed picker serves "browse"」弹成 toast。现在改走带结构化错误的 Remote 命名空间，识别 `directory-picker/unavailable` 后切换到应用内「选择本地目录」对话框（逐级浏览、就地新建文件夹、确认选择，样式与现有对话框一致，中英文案齐全）；能力类型记在模块内，后续打开直接走对应交互，不再先失败一次。`globalThis.__DSH_DIRECTORY_PICKER__` 桌面桥仍是最优先，pick 成功或其他错误码时行为不变。
 
 ## [0.2.7] - 2026-10-24
 

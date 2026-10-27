@@ -45,6 +45,7 @@ const SUITES = [
   'peer-mode',
   'diagnostics',
   'client-shape',  'backdrop-dismiss',
+  'browse-fallback',
   'projection-relax',
   'projection-real',
   'tree-transfer',
