@@ -2,6 +2,12 @@
 
 本文件记录 dsh-ssh-workspace 的版本变更。0.1.16 之前的版本为未公开的本地迭代，未收录。
 
+## [未发布]
+
+### 新增
+
+- **局域网部署支持（`allowLan`）**：新增插件配置 `allowLan`（默认 `false`，行为与文案完全不变）与可选 `allowedHosts`。webserver 绑定 `0.0.0.0`、浏览器从局域网访问时，路由此前一律 `forbidden: loopback-only`；开启后来源地址放宽到私网段（IPv4 RFC1918、IPv6 ULA/链路本地，公网仍拒），`Host` 头改为必须匹配本机真实网卡地址 + 端口（`os.networkInterfaces()` 收集，回环拼写始终有效），`allowedHosts` 可并入局域网主机名等额外值——防 DNS-rebinding 语义保留，不匹配的 Host 仍以 `forbidden: unexpected Host header …` 拒绝并区分原因。
+
 ## [0.2.7] - 2026-10-24
 
 ### 新增

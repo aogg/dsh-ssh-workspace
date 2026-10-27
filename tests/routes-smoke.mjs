@@ -15,6 +15,7 @@
 
 import { readFileSync } from 'node:fs'
 import { createServer } from 'node:net'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -1055,6 +1056,165 @@ function fakeUploadReq ({ url, host = 'localhost:4074', chunks, method = 'POST' 
     }
   } finally {
     rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+// --- allowLan: the LAN-deployment fence ------------------------------------
+//
+// `allowLan` widens "who may call these endpoints" from the loopback interface
+// to this machine's own addresses, for deployments whose webserver is bound to
+// a LAN interface. Both halves of the fence must survive the widening: the
+// remote address has to be loopback or a PRIVATE network one (a public address
+// is still refused), and the Host header has to name this server — a rebound
+// page must send its own hostname, so the anti-rebinding property carries
+// over. The default mode keeps its historical wording byte for byte, asserted
+// here explicitly so a future rewording is a conscious act.
+{
+  const doubles = () => ({
+    engine: { pool: new Map(), store: { rows: () => [] } },
+    router: { listRoots: () => [], listDisabled: () => [] },
+    forwards: { list: () => [] },
+    shells: { list: () => [] },
+    ctx: { get: () => undefined },
+  })
+
+  // The engine behind the streaming routes must be able to serve a file, so
+  // the download assertions prove the fence PASSES and the bytes flow — not
+  // merely that the answer is not 403.
+  const lanEngine = Object.assign(fakeEngine(new Map([
+    ['/srv/report.txt', Buffer.from('hello from the remote host')],
+  ])), { pool: new Map() })
+  const lanRoutes = makeRoutes({
+    ...doubles(),
+    engine: lanEngine,
+    allowLan: true,
+    allowedHosts: ['Panel.LAN', ' panel2.lan '],
+  })
+  const lanStatus = lanRoutes.find(route => route.path === ROUTES.status)
+  const lanDownload = lanRoutes.find(route => route.path === ROUTES.download)
+  const lanUpload = lanRoutes.find(route => route.path === ROUTES.upload)
+
+  const realHosts = Object.values(os.networkInterfaces()).flat()
+    .filter(entry => entry?.internal === false && typeof entry?.address === 'string' && entry.address !== '')
+    .map(entry => (entry.address.includes(':') ? `[${entry.address.toLowerCase()}]:4074` : `${entry.address.toLowerCase()}:4074`))
+
+  // A private origin with a configured extra Host passes the shared guard —
+  // and the configured value is normalized, so mixed case and stray spaces
+  // still match.
+  {
+    const { res, state } = fakeRes()
+    await lanStatus.handler(fakeReq({ remoteAddress: '192.168.1.244', headers: { host: 'panel.lan:4074' } }), res)
+    check('allowLan admits a private origin with a configured Host', state.status === 200, `${state.status} ${state.body}`)
+  }
+  // The machine's own interface address is a valid Host by construction.
+  if (realHosts.length > 0) {
+    const { res, state } = fakeRes()
+    await lanStatus.handler(fakeReq({ remoteAddress: '10.66.0.7', headers: { host: realHosts[0] } }), res)
+    check(`allowLan admits the machine's own interface Host (${realHosts[0]})`, state.status === 200, `${state.status} ${state.body}`)
+  } else {
+    check("allowLan admits the machine's own interface Host", true, 'no non-internal interface on this machine — case not exercisable')
+  }
+  // All private-network address classes are admitted: RFC1918, the mapped
+  // IPv4 spelling, IPv6 ULA and link-local (with its zone suffix).
+  for (const [address, label] of [
+    ['10.0.0.5', 'RFC1918'],
+    ['172.16.5.5', 'RFC1918 172.16/12'],
+    ['::ffff:192.168.9.9', 'mapped IPv4'],
+    ['fd12:3456:789a::1', 'IPv6 ULA'],
+    ['fe80::1%eth0', 'IPv6 link-local'],
+  ]) {
+    const { res, state } = fakeRes()
+    await lanStatus.handler(fakeReq({ remoteAddress: address, headers: { host: 'panel2.lan:4074' } }), res)
+    check(`allowLan admits a ${label} origin`, state.status === 200, `${state.status} ${state.body}`)
+  }
+  // A wrong Host is still refused, and the reason stays distinguishable from
+  // the origin refusal.
+  {
+    const { res, state } = fakeRes()
+    await lanStatus.handler(fakeReq({ remoteAddress: '192.168.1.244', headers: { host: 'evil.example:4074' } }), res)
+    check('allowLan still refuses a rebinding Host header', state.status === 403, String(state.status))
+    check('...naming the Host header as the cause', JSON.parse(state.body).error.includes('unexpected Host header'), state.body)
+  }
+  // A Host naming a DIFFERENT private address is not this server.
+  {
+    const { res, state } = fakeRes()
+    await lanStatus.handler(fakeReq({ remoteAddress: '192.168.1.244', headers: { host: '192.168.1.1:4074' } }), res)
+    check('allowLan refuses a Host that names another machine', state.status === 403, String(state.status))
+  }
+  // A public origin is refused even with a perfect Host, and the refusal says
+  // why rather than claiming "loopback-only".
+  {
+    const { res, state } = fakeRes()
+    await lanStatus.handler(fakeReq({ remoteAddress: '8.8.8.8', headers: { host: 'panel.lan:4074' } }), res)
+    check('allowLan still refuses a public origin', state.status === 403, String(state.status))
+    check('...naming the address class as the cause',
+      JSON.parse(state.body).error.includes('neither loopback nor a private network address'), state.body)
+  }
+  // The byte-streaming routes apply the same verdict with their terse wording.
+  {
+    const { res, state } = fakeRes()
+    await lanDownload.handler(fakeReq({
+      url: `${ROUTES.download}?alias=a&path=${encodeURIComponent('/srv/report.txt')}`,
+      remoteAddress: '192.168.1.244',
+      headers: { host: 'panel.lan:4074' },
+    }), res)
+    check('allowLan lets a LAN browser download', state.status === 200, `${state.status} ${state.body}`)
+    check('...the body is the remote content', state.body === 'hello from the remote host', JSON.stringify(state.body))
+  }
+  {
+    const { res, state } = fakeRes()
+    await lanDownload.handler(fakeReq({ remoteAddress: '192.168.1.244', headers: { host: 'evil.example:4074' } }), res)
+    check('allowLan download still refuses a rebinding Host', state.status === 403 && state.body === '{"error":"forbidden"}',
+      `${state.status} ${state.body}`)
+  }
+  {
+    const { res, state } = fakeRes()
+    await lanUpload.handler(fakeReq({
+      method: 'POST',
+      url: `${ROUTES.upload}?alias=a&path=${encodeURIComponent('/srv')}&name=x.txt`,
+      remoteAddress: '192.168.1.244',
+      headers: { host: 'panel.lan:4074' },
+    }), res)
+    check('allowLan upload passes the fence (route proceeds)', state.status === 200, `${state.status} ${state.body}`)
+  }
+  {
+    const { res, state } = fakeRes()
+    await lanUpload.handler(fakeReq({
+      method: 'POST',
+      url: `${ROUTES.upload}?alias=a&path=${encodeURIComponent('/srv')}&name=x.txt`,
+      remoteAddress: '8.8.8.8',
+      headers: { host: 'panel.lan:4074' },
+    }), res)
+    check('allowLan upload still refuses a public origin', state.status === 403, String(state.status))
+  }
+
+  // Default mode: the wording the loopback fence has always answered with.
+  const plainRoutes = makeRoutes(doubles())
+  const plainStatus = plainRoutes.find(route => route.path === ROUTES.status)
+  const plainDownload = plainRoutes.find(route => route.path === ROUTES.download)
+  {
+    const { res, state } = fakeRes()
+    await plainStatus.handler(fakeReq({ remoteAddress: '192.168.1.244', headers: { host: 'panel.lan:4074' } }), res)
+    check('default mode refuses a LAN origin with the historical wording',
+      state.status === 403 && state.body === '{"error":"forbidden: loopback-only"}', `${state.status} ${state.body}`)
+  }
+  {
+    const { res, state } = fakeRes()
+    await plainStatus.handler(fakeReq({ remoteAddress: '127.0.0.1', headers: { host: 'evil.example:4074' } }), res)
+    check('default mode refuses a rebinding Host with the historical wording',
+      state.status === 403 && state.body === `{"error":"forbidden: unexpected Host header \\"evil.example:4074\\""}`,
+      `${state.status} ${state.body}`)
+  }
+  {
+    const { res, state } = fakeRes()
+    await plainStatus.handler(fakeReq({ url: ROUTES.status, headers: { host: 'localhost:4074' } }), res)
+    check('default mode still serves a loopback request', state.status === 200, `${state.status} ${state.body}`)
+  }
+  {
+    const { res, state } = fakeRes()
+    await plainDownload.handler(fakeReq({ remoteAddress: '192.168.1.244', headers: { host: 'panel.lan:4074' } }), res)
+    check('default download keeps its terse refusal for a LAN origin',
+      state.status === 403 && state.body === '{"error":"forbidden"}', `${state.status} ${state.body}`)
   }
 }
 
