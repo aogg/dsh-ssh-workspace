@@ -9,6 +9,11 @@
 - **局域网部署支持（`allowLan`）**：新增插件配置 `allowLan`（默认 `false`，行为与文案完全不变）与可选 `allowedHosts`。webserver 绑定 `0.0.0.0`、浏览器从局域网访问时，路由此前一律 `forbidden: loopback-only`；开启后来源地址放宽到私网段（IPv4 RFC1918、IPv6 ULA/链路本地，公网仍拒），`Host` 头改为必须匹配本机真实网卡地址 + 端口（`os.networkInterfaces()` 收集，回环拼写始终有效），`allowedHosts` 可并入局域网主机名等额外值——防 DNS-rebinding 语义保留，不匹配的 Host 仍以 `forbidden: unexpected Host header …` 拒绝并区分原因。
 - **「新建本地工作区」的应用内浏览降级**：宿主组合的是 browse 目录选择后端（只有 `list` / `createDirectory` 原语）时，「新建本地工作区」此前每次都先调原生 `pick` 动词、失败后把「directory picker failed: … needs the native capability; the composed picker serves "browse"」弹成 toast。现在改走带结构化错误的 Remote 命名空间，识别 `directory-picker/unavailable` 后切换到应用内「选择本地目录」对话框（逐级浏览、就地新建文件夹、确认选择，样式与现有对话框一致，中英文案齐全）；能力类型记在模块内，后续打开直接走对应交互，不再先失败一次。`globalThis.__DSH_DIRECTORY_PICKER__` 桌面桥仍是最优先，pick 成功或其他错误码时行为不变。
 
+### 修复
+
+- **点「新建本地工作区」报 `cannot get property "remote" without inject`**：浏览降级改造新增的 `ctx.remote.directoryPicker` 访问点没有在客户端工厂的 cordis inject 声明里登记，而 cordis 对未声明的属性读取直接抛错（可选链也躲不掉，抛错发生在 getter 里）。现在 inject 数组补上 `'remote', 'remote.directoryPicker'`（对齐 dsh-client-ui-workspace 的声明方式）；同一个 apply ctx 覆盖 `makeLocalPicker` 与 `LocalDirectoryBrowser` 两个访问点，声明一次即可。
+- **勾选「转发 ssh-agent」后目录浏览不可用**：引擎此前把 `agentForward` 塞进 ssh2 的连接级 config，而 ssh2 会把连接级该字段当成整条连接的转发许可——连接上没有配置 agent（key / password 认证正是如此）时 `connect()` 直接抛 `You must set a valid agent path to allow agent forwarding`，连接建不起来，SFTP 浏览随之全挂；即便有 agent 也会把转发请求加到包括只读 SFTP 在内的所有通道上。现在连接级不再携带该字段：转发意图记在连接记录上，由统一的 `channelExecOptions` 只在 exec / shell 命令通道上表达（快照 exec、`openChannel` 的监视器 / 终端 / 持久 shell、shell 与 subprocess 路由全部走它），SFTP 路径不受影响；需要转发而连接上没有 agent 时（key / password 认证）会探测本机 ssh-agent 并挂上（配置的密钥 / 密码仍是第一认证方式，认证类型不变），本机没有 agent 时转发空转、连接照常；agent 认证且无 ssh-agent 的明确报错保持不变。
+
 ## [0.2.7] - 2026-10-24
 
 ### 新增

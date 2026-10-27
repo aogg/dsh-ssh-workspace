@@ -227,6 +227,48 @@ console.log('\n[browseFaceOf: one face, two hosts]')
 }
 
 // ---------------------------------------------------------------------------
+console.log('\n[inject guard: the declared remote faces]')
+
+{
+  // Cordis refuses every undeclared property read on the apply context — the
+  // getter itself throws, so `ctx?.remote` does not survive it. This double
+  // reproduces that contract: reads of names outside `declared` throw exactly
+  // like the framework does, reads of declared names serve the stand-in face.
+  const pickerFace = {
+    pick: async () => ({ ok: true, value: '/home/user/project' }),
+    list: async () => ({ ok: true, value: { path: '/home', entries: [], crumbs: [] } }),
+    createDirectory: async () => ({ ok: true, value: '/home/new' }),
+  }
+  const declaredCtx = new Proxy({}, {
+    get (target, prop) {
+      if (prop === 'remote') return { directoryPicker: pickerFace }
+      if (prop === 'get') return (name) => (name === 'uiWorkspace' ? { pickDirectory: async () => '/from/wrapper' } : undefined)
+      throw new Error(`cannot get property "${String(prop)}" without inject`)
+    },
+  })
+
+  // The guard itself bites: an undeclared read is the reported crash.
+  let guardBites = 'no'
+  try { declaredCtx.auth } catch (error) { guardBites = error.message }
+  check('the double throws on an undeclared property, like cordis',
+    guardBites === 'cannot get property "auth" without inject', guardBites)
+
+  // With `remote` declared, both access points serve through the same ctx:
+  // makeLocalPicker (the flow's pick arm) and browseFaceOf (the dialog's arm).
+  const sandbox = buildPicker({ kind: 'unknown' })
+  const picked = await sandbox.makeLocalPicker(declaredCtx)()
+  check('makeLocalPicker reads the declared remote face', picked === '/home/user/project', String(picked))
+  const dialog = await buildBrowseFace(declaredCtx).list(undefined)
+  check('browseFaceOf (LocalDirectoryBrowser) reads the same declared face',
+    dialog.ok === true, JSON.stringify(dialog))
+}
+
+function buildBrowseFace (ctx) {
+  const build = new Function(`${extractFunction('browseFaceOf')}; return browseFaceOf`)
+  return build()(ctx)
+}
+
+// ---------------------------------------------------------------------------
 console.log('\n[wiring]')
 
 check('the flow recognizes the browse marker', source.includes('picked === LOCAL_PICK_BROWSE'))
@@ -235,6 +277,9 @@ check('the local browse mode renders the browser dialog', source.includes('React
 check('the capability is remembered at factory scope', /const localPickCapability = \{ kind: 'unknown' \}/.test(source))
 check('a remembered browse capability skips the native verb', source.includes("localPickCapability.kind === 'browse'"))
 check('the client context is parked for the dialog (marksCtx pattern)', /let flowCtx = null/.test(source) && source.includes('flowCtx = ctx'))
+check('the apply factory declares the remote faces the pick arms read',
+  /const inject = \['slots', 'locale', 'remote', 'remote\.directoryPicker'\]/.test(source),
+  source.match(/const inject = \[[^\]]*\]/)?.[0] ?? '(inject declaration not found)')
 check('the dialog drives the browse list verb', source.includes('face.list('))
 check('the dialog drives the browse create verb', source.includes('face.createDirectory('))
 check('the dialog follows the reported ancestry for Up (no path-string slicing)',
