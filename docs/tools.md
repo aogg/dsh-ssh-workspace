@@ -119,10 +119,17 @@ ENOENT」的工作区。工作区记录若已被 `deregister` 模式删掉，会
 每次调用是一个**全新进程**：`cd`、导出的变量、后台任务都不会保留。需要保留
 状态时用 `ssh_workspace_shell`。
 
+命令在**主机的登录 shell** 里执行，方言按主机探测（连接级缓存）：
+Linux/macOS 主机是 POSIX `sh`；Windows OpenSSH 主机默认登录 shell 是
+`cmd.exe`，命令按 cmd 语法写（`where`、`if not exist … mkdir`、`set "K=V"`；
+带 `cwd` 时插件用 `cd /d "D:\path" &&` 切目录）。登录 shell 被改成
+PowerShell 的主机**当前不适配**：探测不出 cmd 时一律按 POSIX 兜底，命令会
+在那里失败——把该主机默认 shell 改回 cmd.exe 即可恢复。
+
 | 参数 | 必填 | 说明 |
 | --- | --- | --- |
 | `alias` | 是 | 主机别名 |
-| `command` | 是 | 远端 shell 命令 |
+| `command` | 是 | 远端 shell 命令（主机方言） |
 | `cwd` | 否 | 远端工作目录 |
 | `timeoutMs` | 否 | 超时毫秒（默认 60000）；`run_in_background` 时忽略 |
 | `run_in_background` | 否 | 作为后台任务启动，立即返回 job id |
@@ -137,17 +144,24 @@ ENOENT」的工作区。工作区记录若已被 `deregister` 模式删掉，会
 
 ## ssh_workspace_shell
 
-在**持久**的远端 shell 里执行命令：同一 (主机, 会话名) 上维持一个 POSIX `sh`，
+在**持久**的远端 shell 里执行命令：同一 (主机, 会话名) 上维持一个登录 shell，
 `cd`、导出的变量与后台任务跨调用保留，等同于一直使用同一个终端。
 
-远端 shell **固定是 POSIX `sh`**，即使本机是 Windows 也请写 POSIX 语法。
-部署自带的 persistent bash / pwsh 工具按本机方言构造命令行（Windows 上是
-PowerShell），无法驱动远端主机，因此本插件单独提供这个工具而不是接管它们。
+shell 方言**跟随主机**（连接时探测并缓存）：Linux/macOS 主机是 POSIX `sh`
+（`sh -l` 登录 shell），Windows OpenSSH 主机是 `cmd.exe`（没有 login shell
+概念，直接启动；给 `cwd` 时用 `cmd /k cd /d "D:\path"` 先切盘符目录再保持
+交互）。即使本机是 Windows 也请按**远端**方言写命令：POSIX 主机写 POSIX 语法，
+Windows 主机写 cmd 语法。部署自带的 persistent bash / pwsh 工具按本机方言
+构造命令行（Windows 上是 PowerShell），无法驱动远端主机，因此本插件单独提供
+这个工具而不是接管它们。
+
+退出码的取回方式方言各自处理：POSIX 用 `$?`，cmd 用 `%ERRORLEVEL%`
+（标记行单独成行——cmd 按行解析并展开 `%VAR%`，标记行展开时上一行命令已跑完）。
 
 | 参数 | 必填 | 说明 |
 | --- | --- | --- |
 | `alias` | 是 | 主机别名 |
-| `command` | 否 | POSIX shell 命令；`close: true` 时可省 |
+| `command` | 否 | 远端方言的 shell 命令；`close: true` 时可省 |
 | `session` | 否 | 会话名（默认 `default`），不同名字互不干扰 |
 | `close` | 否 | 关闭该会话并释放，而不是执行命令 |
 | `timeoutMs` | 否 | 等待命令结束的毫秒（默认 60000） |
@@ -155,8 +169,27 @@ PowerShell），无法驱动远端主机，因此本插件单独提供这个工�
 返回 `ok`、`output`、`exitCode`、`session`、`reused`（本次调用是否复用了已有
 会话）；关闭时返回 `closed`（关闭的会话数）。
 
-退出码通过命令行末尾追加的标记行取回：PTY 没有独立退出通道，`$?` 被立即
+退出码通过命令行末尾追加的标记行取回：PTY 没有独立退出通道，退出码被立即
 捕获并随标记一起打印，因此输出里的标记行不会混进 `output`。
+
+### Windows 主机上哪些能力可用
+
+Windows OpenSSH 默认登录 shell 是 cmd.exe，本插件按主机探测方言后分派
+（连接级缓存；探测失败一律按 POSIX 兜底，不会炸通道）：
+
+| 能力 | Windows 主机（cmd） | 说明 |
+| --- | --- | --- |
+| read / write / edit / stat / 列目录 / 传输 | 可用 | 纯 SFTP，与 shell 方言无关 |
+| 挂载 / 卸载 / 状态 / 端口转发 | 可用 | 同上 |
+| ssh_workspace_exec / shell / 终端 | 可用 | 命令按 cmd 语法写；`cd /d` 切盘符 |
+| glob / grep（远端 rg） | 可用（需远端装 rg） | 子进程桥按 cmd 拼脚本（`where` 探测、`set` 导出） |
+| 工作区变更追踪（远端 git） | 可用（需远端装 git） |  scratch 暂存镜像固定用 POSIX `/tmp`，Windows 主机上该镜像目录不可用——git 本体可用，宿主 scratch 的镜像 staging 不生效 |
+| 变更监视（inotifywait） | 不可用 | Windows 无 inotifywait，自动回退轮询 |
+| 登录 shell 改成 PowerShell 的主机 | **不适配** | 探测不到 cmd 时按 POSIX 兜底，POSIX/cmd 语法都会失败 |
+
+限制的根因写一句就够：PowerShell 既不认 `export` / `command -v` 也不认
+`set "K=V"` / `where` 的 cmd 语义，暂不为它出第三套拼法；需要时把主机默认
+shell 改回 cmd.exe（注册表 `DefaultShell`）。
 
 ## ssh_workspace_transfer
 
