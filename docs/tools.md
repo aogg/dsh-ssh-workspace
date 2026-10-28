@@ -18,7 +18,8 @@
 
 返回 `hosts[]`，每项含 `alias`、`host`、`port`、`user`、`auth`
 （`key` / `password` / `agent`）、`keyReady`、`source`（`store` / `ssh-config`）、
-`description`、`tags`。
+`description`（无则为空，不会出现 `undefined` 字段）、`tags`、`agentForward`、
+`compress`。
 
 ## ssh_workspace_mount
 
