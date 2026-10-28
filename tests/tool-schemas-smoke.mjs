@@ -142,6 +142,49 @@ for (const [name, value] of renderCases) {
   }
 }
 
+// --- hosts output: lossless JSON boundary + required flag booleans ---------
+// The hosts tool used to serialize rows whose optional fields were `undefined`
+// (a store entry without a description), which the Host's lossless-JSON result
+// encoding refuses — the whole tool RESULT broke, not one field. The fix drops
+// undefined-valued fields before returning and spells agentForward/compress as
+// required booleans, which only holds if every row always carries them.
+{
+  const hostsTool = tools.find(candidate => candidate.name === 'ssh_workspace_hosts')
+  const items = hostsTool?.output?.schema?.properties?.hosts?.items ?? {}
+  // defineTool compiles the author-facing `required: true` flags into the raw
+  // JSON-Schema `required` array on the items — the compiled form is the contract.
+  const compiledRequired = items.required ?? []
+  for (const flag of ['agentForward', 'compress']) {
+    check(`hosts output schema marks ${flag} required`, compiledRequired.includes(flag), JSON.stringify(compiledRequired))
+    check(`hosts output schema types ${flag} as boolean`, items.properties?.[flag]?.type === 'boolean', JSON.stringify(items.properties?.[flag]))
+  }
+
+  // Execute against a store whose rows are shaped exactly like HostStore.rows()
+  // produces: booleans and arrays always present, description undefined when
+  // unset — the historical lossless-JSON killer.
+  const rows = [
+    { alias: 'full', host: 'h.example', port: 22, user: 'u', auth: 'key', keyReady: true, source: 'store', description: 'web box', tags: ['web'], agentForward: true, compress: false },
+    { alias: 'bare', host: 'b.example', port: 2222, user: 'u2', auth: 'agent', keyReady: false, source: 'ssh-config', description: undefined, tags: [], agentForward: false, compress: false },
+  ]
+  const hostsEngine = { store: { rows: () => rows } }
+  const hostsTools = workspaceTools({ get: () => undefined }, hostsEngine, router, forwards, shells)
+  const executeHosts = hostsTools.find(candidate => candidate.name === 'ssh_workspace_hosts')
+  const result = await executeHosts.execute({}, {})
+  const bare = result.hosts.find(row => row.alias === 'bare')
+  const full = result.hosts.find(row => row.alias === 'full')
+  check('an unset description is dropped, not serialized',
+    bare !== undefined && Object.hasOwn(bare, 'description') === false, JSON.stringify(bare))
+  check('no host row carries an undefined value',
+    result.hosts.every(row => Object.values(row).every(value => value !== undefined)),
+    JSON.stringify(result.hosts))
+  check('present optionals and the flag booleans survive the cleanup',
+    full !== undefined && full.description === 'web box' && full.agentForward === true && full.compress === false,
+    JSON.stringify(full))
+  const { isJsonValue } = requireFromCore('@deepseek-ai/dsh-util-values')
+  check('the whole result sits inside the lossless JSON boundary', isJsonValue(result) === true,
+    JSON.stringify(result).slice(0, 120))
+}
+
 engine.dispose()
 console.log(`\n=== ${passes.length} passed, ${failures.length} failed ===`)
 if (failures.length > 0) {

@@ -226,6 +226,45 @@ try {
       uninstallBuiltinBridge()
     }
   }
+  // ---------------------------------------------------------------------
+  // 6. Windows drive-absolute path spellings fold onto the remote host.
+  //    Windows hosts root their workspaces at `ssh://win/D:/…`, so a
+  //    drive-absolute argument under an established remote base IS a remote
+  //    absolute path — treating it as a relative segment used to spell
+  //    `ssh://win/D:/…/D:/…`, and resetting to the local world lost the
+  //    remote context. With NO remote base the local behaviour is untouched.
+  // ---------------------------------------------------------------------
+  {
+    const posixResolve = path.posix.resolve
+    const posixJoin = path.posix.join
+    const { engine } = makeEngine({ live: true })
+    const router = makeRouter()
+    installBuiltinBridge({ engine, router })
+    try {
+      check('resolve folds a drive-absolute argument onto the remote base',
+        path.resolve('ssh://win/D:/x', 'D:/logs') === 'ssh://win/D:/logs',
+        path.resolve('ssh://win/D:/x', 'D:/logs'))
+      check('resolve folds the backslashed spelling too',
+        path.resolve('ssh://win/D:/x', 'D:\\logs') === 'ssh://win/D:/logs',
+        path.resolve('ssh://win/D:/x', 'D:\\logs'))
+      check('join folds a drive-absolute tail onto the remote base',
+        path.join('ssh://win/D:/x', 'D:/logs') === 'ssh://win/D:/logs',
+        path.join('ssh://win/D:/x', 'D:/logs'))
+      check('a relative tail still appends under the remote base',
+        path.join('ssh://win/D:/x', 'sub', 'a.txt') === 'ssh://win/D:/x/sub/a.txt',
+        path.join('ssh://win/D:/x', 'sub', 'a.txt'))
+      const localResolved = path.resolve('D:/logs')
+      check('a drive-absolute argument with no remote base stays local',
+        localResolved === posixResolve('D:/logs') && !localResolved.startsWith('ssh://'),
+        localResolved)
+      const localJoined = path.join('D:/x', 'sub')
+      check('a join with no remote operand is untouched',
+        localJoined === posixJoin('D:/x', 'sub') && !localJoined.startsWith('ssh://'),
+        localJoined)
+    } finally {
+      uninstallBuiltinBridge()
+    }
+  }
 } finally {
   rmSync(home, { recursive: true, force: true })
 }

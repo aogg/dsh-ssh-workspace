@@ -58,6 +58,7 @@ const SUITES = [
   'store-lock',
   'transfer',
   'mode-gate',
+  'dialect',
   'shell',
   'terminal',
   'transport',

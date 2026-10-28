@@ -112,6 +112,34 @@ console.log('\n=== terminal smoke ===\n')
 }
 
 {
+  // A cmd.exe host (Windows OpenSSH defaults the login shell there) must be
+  // opened with cmd — `/k cd /d` crosses drives FIRST and keeps the SAME cmd
+  // process interactive, so `cd` state survives for the session. The probe
+  // that answers `posix` keeps the login sh (the block above).
+  const { engine, opens } = fakeEngine()
+  engine.remoteDialect = async () => 'cmd'
+  const router = new RemoteTerminalRouter({ engine })
+  await router.spawnTerminal({ cwd: 'ssh://winbox/D:/logs', argv: ['pwsh'], rows: 24, cols: 80 })
+  check('a cmd-dialect host opens cmd.exe with /k cd /d into the drive path',
+    opens[0]?.command === 'cmd.exe /k cd /d "D:\\logs"', opens[0]?.command)
+  check('the cmd open still requests a PTY', opens[0]?.options?.pty !== undefined)
+
+  const root = new RemoteTerminalRouter({ engine })
+  const rootOpens = []
+  root.engine = {
+    ...engine,
+    async openChannel (alias, command, options) {
+      rootOpens.push({ alias, command, options })
+      const one = fakeChannel()
+      return { channel: one.channel, release: () => {} }
+    },
+  }
+  await root.spawnTerminal({ cwd: 'ssh://winbox/', argv: ['pwsh'], rows: 24, cols: 80 })
+  check('a cmd-dialect open at the drive root starts bare cmd.exe',
+    rootOpens[0]?.command === 'cmd.exe', rootOpens[0]?.command)
+}
+
+{
   const { engine, opens } = fakeEngine()
   const router = new RemoteTerminalRouter({ engine })
   const handle = await router.spawnTerminal({ cwd: 'ssh://beta/srv/app', argv: ['bash'], rows: 24, cols: 80 })
