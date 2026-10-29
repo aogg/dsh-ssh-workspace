@@ -42,6 +42,7 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 const SUITES = [
   'protocol',
   'peers',
+  'agent-prompts',
   'peer-mode',
   'diagnostics',
   'client-shape',  'backdrop-dismiss',
