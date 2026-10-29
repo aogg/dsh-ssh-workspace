@@ -2,7 +2,7 @@
 
 [根 README](../README.md) 面向「快速了解、安装、能力概览」；本目录存放展开的
 专题文档。内容已从 README 迁移并对照源码展开，**数字与清单均按当前源码核对**
-（路由 22 条、Agent 工具 10 个、冒烟套件 28 个）。如发现与实现不符之处，
+（路由 27 条、Agent 工具 10 个、冒烟套件 34 个）。如发现与实现不符之处，
 以源码为准并欢迎修订。
 
 ## 目录
@@ -13,6 +13,7 @@
 | [architecture.md](./architecture.md) | 架构与实现要点：`ctx.fs` / `ctx.shell` / `ctx.subprocess` 接管、变更监视与流式读取、内建桥接、引擎与连接模型 | 完成 |
 | [protocol.md](./protocol.md) | `ssh://` 路径协议：语法、规范化、显示规则、`file:` URI、写入围栏与停用围栏 | 完成 |
 | [hosts.md](./hosts.md) | 主机配置与认证：存储格式、`~/.ssh/config` 回退、面板管理 | 完成 |
+| [agent-prompts.md](./agent-prompts.md) | Agent 提示词三级配置：全局 → 主机 → 工作区的合并、禁用语义、脚本协议、注入机制与刷新时机 | 完成 |
 | [tools.md](./tools.md) | Agent 工具参考：十个 `ssh_workspace_*` 工具 | 完成 |
 | [ui.md](./ui.md) | 界面指南：面板、添加工作区双入口、远程工作区标记、端口转发与持久会话区 | 完成 |
 | [forward-persistence.md](./forward-persistence.md) | 端口转发的持久化：已存映射、开关语义、端口预检、启动自动开启 | 完成 |

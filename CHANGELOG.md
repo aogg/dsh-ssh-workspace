@@ -2,6 +2,12 @@
 
 本文件记录 dsh-ssh-workspace 的版本变更。0.1.16 之前的版本为未公开的本地迭代，未收录。
 
+## [0.3.0] - 2026-10-29
+
+### 新增
+
+- **Agent 提示词三级配置（全局 → SSH 主机 → 工作区）**：面板可为三级分别配置 glob 模式（命中 dsh 本机 md 文件即加载）与脚本条目（在本机执行，stdout 输出 `{"files":[…]}` 或裸数组指定要加载的 md），合并为该远程工作区内所有会话的系统提示词，每个文件严格按 `----[<绝对路径>]---start … ----[<绝对路径>]---end` 包裹、同文件跨级去重（保留首次）。每条配置有内容派生的稳定 id，下一级可按 id 整条禁用上一级条目（不是覆盖），三个配置入口（面板全局设置区、主机新增/编辑对话框折叠区、已挂载工作区行按钮）都能看到上一级条目并一键禁用/恢复；「预览展开结果」即时展开并列出文件与告警（脚本失败/坏 JSON/超时都是可读告警，不炸合并与面板）。存储扩展 `dsh-ssh.json` 新增顶层段 `agentPrompts`（向后兼容：旧文件无该段行为不变，`hosts`/`secrets`/`knownHosts` 不受影响；主机改名自动携带其配置、删除主机随之清理）。注入走 dsh 本体 `systemPrompt.section` 动态 section（`text` 每个模型步求值，按会话 cwd 匹配最长已挂载根），保存后运行中的会话下一个模型步自动生效；合并结果按（工作区，配置内容哈希）缓存。新增 5 条面板路由（`agent-prompts`/`global`/`host`/`workspace`/`preview`）、`lib/agent-prompts.js` 与两个冒烟套件（`agent-prompts` 66 项、`agent-prompts-routes` 23 项），专题文档见 [docs/agent-prompts.md](docs/agent-prompts.md)。
+
 ## [未发布]
 
 ### 新增

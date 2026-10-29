@@ -43,6 +43,7 @@ const SUITES = [
   'protocol',
   'peers',
   'agent-prompts',
+  'agent-prompts-routes',
   'peer-mode',
   'diagnostics',
   'client-shape',  'backdrop-dismiss',

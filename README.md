@@ -146,6 +146,15 @@ npm ci          # ssh2 是直接依赖，不随 clone 到位
 
 > 存储格式、`~/.ssh/config` 解析规则与凭据策略细节见 [docs/hosts.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/hosts.md)。
 
+### Agent 提示词三级配置
+
+在面板为「全局 → SSH 主机 → 工作区」三级分别配置 glob 模式与脚本，命中的 md 文件
+（dsh 本机上的）自动合并为该工作区内所有会话的系统提示词；下一级可按条禁用上一级，
+支持「预览展开结果」实时查看将加载的文件清单。配置保存在 `dsh-ssh.json` 的
+`agentPrompts` 段，旧文件无需迁移；保存后运行中的会话在下一个模型步自动生效。
+
+> 三级配置、合并 / 禁用语义、脚本协议与刷新时机见 [docs/agent-prompts.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/agent-prompts.md)。
+
 ## 配置
 
 | 字段 | 默认 | 含义 |
@@ -285,6 +294,7 @@ exec 通道；空闲 30 分钟回收（有操作在飞的连接不回收）。
 | [architecture.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/architecture.md) | 架构与实现：`ctx.fs` / `ctx.shell` / `ctx.subprocess` 接管、变更监视与流式读取、内建桥接、引擎与连接模型 |
 | [protocol.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/protocol.md) | `ssh://` 路径协议：语法、规范化、显示规则、`file:` URI、写入围栏与停用围栏 |
 | [hosts.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/hosts.md) | 主机配置与认证：存储格式、`~/.ssh/config` 回退、面板管理 |
+| [agent-prompts.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/agent-prompts.md) | Agent 提示词三级配置：全局 → 主机 → 工作区的合并、禁用语义、脚本协议、注入机制与刷新时机 |
 | [tools.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/tools.md) | Agent 工具参考：十个 `ssh_workspace_*` 工具 |
 | [ui.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/ui.md) | 界面指南：面板、添加工作区双入口、远程工作区标记、端口转发与持久会话区 |
 | [forward-persistence.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/forward-persistence.md) | 端口转发持久化：意图与事实的分离、两条断开路径的一致性、自动开启 |
