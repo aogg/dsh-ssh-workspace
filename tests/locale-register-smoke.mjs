@@ -99,6 +99,21 @@ for (const key of ['editor.defaultPath', 'editor.defaultPathHint', 'editor.badDe
   check(`${key} exists in en`, Object.hasOwn(en, key) && en[key] !== key)
 }
 
+// Recording a default directory ships a second layer of UI: the create
+// dialog's record checkbox (with its ssh-config explanation), the editor's
+// Pick button (with its save-first hint), and the picker's title and OK.
+for (const key of [
+  'remote.setAsDefault',
+  'remote.setAsDefaultHint',
+  'editor.defaultPathPick',
+  'editor.defaultPathPickHint',
+  'picker.title',
+  'picker.ok',
+]) {
+  check(`${key} exists in zh`, Object.hasOwn(zh, key) && zh[key] !== key)
+  check(`${key} exists in en`, Object.hasOwn(en, key) && en[key] !== key)
+}
+
 // ---------------------------------------------------------------------------
 console.log('\n[registration lifecycle]')
 

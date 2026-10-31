@@ -48,6 +48,7 @@ const SUITES = [
   'diagnostics',
   'client-shape',  'backdrop-dismiss',
   'path-crumbs',
+  'default-path-ui',
   'browse-fallback',
   'projection-relax',
   'projection-real',

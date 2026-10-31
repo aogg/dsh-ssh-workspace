@@ -20,7 +20,7 @@
  * Run: node tests/host-default-path-smoke.mjs
  */
 
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -177,6 +177,15 @@ async function call (routes, routePath, options = {}) {
 /** The minimal editor payload the save route accepts. */
 const form = (alias, extra = {}) => ({ alias, host: 'h.example', port: 22, user: 'u', auth: { kind: 'agent' }, ...extra })
 
+/** The engine stubs every route needs besides the host store. */
+const routeDeps = (engine) => ({
+  engine,
+  router: { listRoots: () => [], assertEnabled () {} },
+  forwards: { list: () => [] },
+  shells: { list: () => [] },
+  ctx: { get: () => undefined },
+})
+
 console.log('\n[hosts/save + hosts: the route carries the field]')
 
 {
@@ -236,6 +245,117 @@ console.log('\n[hosts/save + hosts: the route carries the field]')
       const kept = await call(routes, ROUTES.hostSave, { method: 'POST', body: { originalAlias: 'keepme', ...form('keepme', { description: 'touched' }) } })
       check('an update without the key keeps the stored path (old-client semantics)',
         kept.body.ok === true && store.find('keepme').defaultPath === '/srv/data', JSON.stringify(store.find('keepme')))
+    }
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+}
+
+console.log('\n[hosts/default-path: the after-mount record route]')
+//
+// The new-remote-workspace dialog posts here after a successful mount when
+// the user asked to remember the directory. The patch carries ONLY
+// `{ alias, path }` — no auth, no host — so the contract under test is the
+// partial-patch one: normalize, refuse before the store is touched, then
+// merge without disturbing anything else stored about the host.
+
+{
+  const home = mkdtempSync(path.join(tmpdir(), 'dsh-default-path-patch-'))
+  try {
+    // A password-auth entry exercises the part a careless patch would break:
+    // the update carries no auth key, so the store must walk the secretFor
+    // preservation branch and keep the stored secret. The codec is bound to
+    // a key file inside the temp home so the suite never touches ~/.dsh.
+    const { SecretCodec } = await import(pathToFileURL(path.join(pluginRoot, 'lib/secrets.js')).href)
+    const codec = new SecretCodec({ path: path.join(home, 'secrets.key') })
+    const store = new HostConfigStore(path.join(home, 'store.json'), codec)
+    store.create({
+      alias: 'win', host: 'w.example', port: 2222, user: 'deploy',
+      auth: { kind: 'password', password: 's3cret-pw' }, description: 'prod box',
+    })
+    // A second alias that exists ONLY in ~/.ssh/config gets its own refusal
+    // wording (that file is never edited by this plugin).
+    const configPath = path.join(home, 'ssh-config')
+    writeFileSync(configPath, 'Host cfgonly\n  HostName c.example\n  User cfguser\n')
+    const engine = { store: new HostStore(configPath, store), forget () {}, pool: new Map() }
+    const routes = makeRoutes(routeDeps(engine))
+
+    {
+      const reply = await call(routes, ROUTES.hostDefaultPath, { method: 'POST', body: { alias: 'win', path: 'D:\\code' } })
+      const after = store.find('win')
+      check('a record answers ok with the normalized drive spelling',
+        reply.status === 200 && reply.body.ok === true && reply.body.defaultPath === '/D:/code',
+        `${reply.status} ${JSON.stringify(reply.body)}`)
+      check('the stored value is the same normalized spelling the reply names',
+        after.defaultPath === '/D:/code' && reply.body.defaultPath === after.defaultPath, JSON.stringify(after))
+      check('the rest of the entry is untouched by the one-key patch',
+        after.host === 'w.example' && after.port === 2222 && after.user === 'deploy' && after.description === 'prod box',
+        JSON.stringify(after))
+      check('auth survives a patch that carries no auth key', after.auth?.kind === 'password', JSON.stringify(after.auth))
+      // The whole point of the secretFor preservation branch: a default-path
+      // patch must not silently drop the password stored beside the entry.
+      check('the stored secret survives the patch', store.secretFor('win')?.password === 's3cret-pw',
+        JSON.stringify(store.secretFor('win')))
+    }
+    {
+      // An older client (or a different caller) omits the key entirely.
+      const reply = await call(routes, ROUTES.hostDefaultPath, { method: 'POST', body: { alias: 'win' } })
+      check('a body without the path key keeps the stored path (merge semantics)',
+        reply.status === 200 && reply.body.ok === true && reply.body.defaultPath === '/D:/code' &&
+        store.find('win').defaultPath === '/D:/code', `${reply.status} ${JSON.stringify(reply.body)}`)
+    }
+    {
+      const reply = await call(routes, ROUTES.hostDefaultPath, { method: 'POST', body: { alias: 'win', path: '   ' } })
+      check('a blank path answers ok with null (the wire spelling of "not set")',
+        reply.status === 200 && reply.body.ok === true && reply.body.defaultPath === null,
+        `${reply.status} ${JSON.stringify(reply.body)}`)
+      check('the cleared entry carries no defaultPath key at all',
+        !Object.hasOwn(store.find('win'), 'defaultPath'), JSON.stringify(store.find('win')))
+    }
+    {
+      const reply = await call(routes, ROUTES.hostDefaultPath, { method: 'POST', body: { alias: 'win', path: 'relative/path' } })
+      check('a relative path answers 400 with the absoluteness explanation',
+        reply.status === 400 && String(reply.body.error).includes('absolute'), `${reply.status} ${JSON.stringify(reply.body)}`)
+      check('the refused patch left the stored entry alone', store.find('win').defaultPath === undefined)
+    }
+    {
+      const reply = await call(routes, ROUTES.hostDefaultPath, { method: 'POST', body: { alias: 'win', path: 42 } })
+      check('a non-string path answers 400 too', reply.status === 400, `${reply.status} ${JSON.stringify(reply.body)}`)
+    }
+    {
+      const blank = await call(routes, ROUTES.hostDefaultPath, { method: 'POST', body: { alias: '   ', path: '/srv' } })
+      const missing = await call(routes, ROUTES.hostDefaultPath, { method: 'POST', body: { path: '/srv' } })
+      check('a blank alias answers 400 naming the requirement',
+        blank.status === 400 && blank.body.error === 'alias is required', `${blank.status} ${JSON.stringify(blank.body)}`)
+      check('a missing alias is the same refusal',
+        missing.status === 400 && missing.body.error === 'alias is required', `${missing.status} ${JSON.stringify(missing.body)}`)
+    }
+    {
+      const reply = await call(routes, ROUTES.hostDefaultPath, { method: 'POST', body: { alias: 'ghost', path: '/srv' } })
+      check('an unknown alias answers 400 naming the editable store',
+        reply.status === 400 && String(reply.body.error).includes('not in the editable host store'),
+        `${reply.status} ${JSON.stringify(reply.body)}`)
+    }
+    {
+      const reply = await call(routes, ROUTES.hostDefaultPath, { method: 'POST', body: { alias: 'cfgonly', path: '/srv' } })
+      check('an ~/.ssh/config alias answers 400 with the read-only fallback wording',
+        reply.status === 400 && String(reply.body.error).includes('~/.ssh/config'),
+        `${reply.status} ${JSON.stringify(reply.body)}`)
+    }
+    {
+      // Storage failures answer hostSave-style: 200 with ok:false, never a 500 —
+      // the workspace is already mounted, so the record step must not read as a
+      // server error.
+      class BrokenStore extends HostConfigStore {
+        update () { throw new Error('storage exploded') }
+      }
+      // Same file, so find() still sees the entry and only update() is broken.
+      const broken = new BrokenStore(path.join(home, 'store.json'), codec)
+      const brokenRoutes = makeRoutes(routeDeps({ store: new HostStore(configPath, broken), forget () {}, pool: new Map() }))
+      const reply = await call(brokenRoutes, ROUTES.hostDefaultPath, { method: 'POST', body: { alias: 'win', path: '/srv' } })
+      check('a storage failure answers 200 with ok:false and the reason',
+        reply.status === 200 && reply.body.ok === false && String(reply.body.error).includes('storage exploded'),
+        `${reply.status} ${JSON.stringify(reply.body)}`)
     }
   } finally {
     rmSync(home, { recursive: true, force: true })
