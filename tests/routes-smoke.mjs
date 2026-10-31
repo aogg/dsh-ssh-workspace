@@ -7,6 +7,9 @@
  * directly: a missing loopback check here would serve arbitrary remote files to
  * any web page that can reach the port.
  *
+ * The `ls` route answers JSON but carries the writable verdict for the browser,
+ * so its section pins the SFTP create-probe contract (see the section comment).
+ *
  * These tests drive the registered handler objects with synthetic request and
  * response doubles, so no server and no SSH host are involved.
  *
@@ -135,8 +138,25 @@ function fakeReq (options = {}) {
   }
 }
 
-/** A fake engine that serves and accepts in-memory files. */
-function fakeEngine (files, directories = new Set()) {
+/** Entry attribute double as an SFTP readdir row carries it. */
+function listingAttrs ({ directory }) {
+  return {
+    size: directory ? 0 : 4,
+    mtime: 1234567890,
+    isDirectory: () => directory,
+    isSymbolicLink: () => false,
+  }
+}
+
+/**
+ * A fake engine that serves and accepts in-memory files.
+ *
+ * The optional third argument tunes the write-probe behaviour of the `open`
+ * double: `rejectExclusive` fails every exclusive create (the "server refuses
+ * the 'wx' flag string" case), `denyCreates` fails every create (the
+ * "directory is read-only" case).
+ */
+function fakeEngine (files, directories = new Set(), options = {}) {
   const state = { opened: 0, closed: 0, renamed: [], unlinked: [], mkdirs: [] }
   return {
     state,
@@ -153,7 +173,20 @@ function fakeEngine (files, directories = new Set()) {
         },
         open (target, flags, callback) {
           state.opened += 1
-          if (flags === 'w') {
+          if (options.rejectExclusive === true && flags === 'wx') {
+            callback(Object.assign(new Error('the server refused the exclusive-create flag'), { code: 4 }))
+            return
+          }
+          if (options.denyCreates === true && (flags === 'w' || flags === 'wx')) {
+            callback(Object.assign(new Error('permission denied'), { code: 3 }))
+            return
+          }
+          if (flags === 'w' || flags === 'wx') {
+            // Exclusive create is refused when the target already exists.
+            if (flags === 'wx' && files.has(target)) {
+              callback(Object.assign(new Error('file already exists'), { code: 4 }))
+              return
+            }
             // Writes go to a buffer the handle accumulates; publish renames it.
             callback(null, { __content: Buffer.alloc(0), __write: true, __target: target })
             return
@@ -161,6 +194,23 @@ function fakeEngine (files, directories = new Set()) {
           const content = files.get(target)
           if (content === undefined) { callback(Object.assign(new Error('no such file'), { code: 2 })); return }
           callback(null, { __content: content, __position: 0 })
+        },
+        // The /ls route reads a directory the same way the ssh2 client does:
+        // rows of `{ filename, attrs }` for the direct children only.
+        readdir (target, callback) {
+          if (!directories.has(target)) { callback(Object.assign(new Error('no such file'), { code: 2 })); return }
+          const rows = []
+          for (const dir of directories) {
+            if (dir !== target && path.posix.dirname(dir) === target) {
+              rows.push({ filename: path.posix.basename(dir), attrs: listingAttrs({ directory: true }) })
+            }
+          }
+          for (const file of files.keys()) {
+            if (path.posix.dirname(file) === target) {
+              rows.push({ filename: path.posix.basename(file), attrs: listingAttrs({ directory: false }) })
+            }
+          }
+          callback(null, rows)
         },
         write (handle, buffer, offset, length, position, callback) {
           handle.__content = Buffer.concat([handle.__content, buffer.subarray(offset, offset + length)])
@@ -1215,6 +1265,90 @@ function fakeUploadReq ({ url, host = 'localhost:4074', chunks, method = 'POST' 
     await plainDownload.handler(fakeReq({ remoteAddress: '192.168.1.244', headers: { host: 'panel.lan:4074' } }), res)
     check('default download keeps its terse refusal for a LAN origin',
       state.status === 403 && state.body === '{"error":"forbidden"}', `${state.status} ${state.body}`)
+  }
+}
+
+// --- /ls: the writable probe ------------------------------------------------
+//
+// The listing used to decide "writable" by shelling out (`test -w <dir>`),
+// which lied on Windows hosts (cmd.exe has no `test`) and needed a remote
+// shell at all. The probe now creates a throwaway file over the very SFTP
+// channel the agent will use, and a failed create IS the verdict. Pinned
+// here: the verdict, the cleanup, the one-step 'wx' → 'w' fallback, and the
+// rule that the probe can never turn a good listing into an error.
+{
+  const files = new Map([['/srv/data/report.txt', Buffer.from('data')]])
+  const dirs = new Set(['/srv/data'])
+  const execCalls = []
+  const lsEngine = Object.assign(fakeEngine(files, dirs), {
+    async exec (...args) { execCalls.push(args); return { exitCode: 0 } },
+  })
+  const lsRoutes = makeRoutes({ engine: lsEngine, router: {}, forwards, shells, ctx: { get: () => undefined } })
+  const ls = lsRoutes.find(route => route.path === ROUTES.ls)
+  check('the ls route is registered', ls !== undefined)
+
+  {
+    const { res, state } = fakeRes()
+    await ls.handler(fakeReq({
+      url: `${ROUTES.ls}?alias=a&path=${encodeURIComponent('/srv/data')}`,
+      headers: { host: 'localhost:4074' },
+    }), res)
+    const body = JSON.parse(state.body)
+    check('a listing answers 200', state.status === 200, `${state.status} ${state.body}`)
+    check('the listing echoes the directory and its entries',
+      body.path === '/srv/data' && body.entries?.length === 1
+      && body.entries[0].name === 'report.txt' && body.entries[0].type === 'file',
+      state.body)
+    check('a creatable directory reports writable', body.writable === true, state.body)
+    const probes = lsEngine.state.unlinked.filter(target => target.startsWith('/srv/data/.dsh-wprobe-'))
+    check('the probe creates (and removes) exactly one .dsh-wprobe- file',
+      probes.length === 1 && /^\/srv\/data\/\.dsh-wprobe-[0-9a-f]+$/.test(probes[0]),
+      JSON.stringify(lsEngine.state.unlinked))
+    check('the probe file does not survive the listing',
+      [...files.keys()].every(name => !name.includes('.dsh-wprobe-')), JSON.stringify([...files.keys()]))
+    check('the probe closed every handle it opened',
+      lsEngine.state.opened > 0 && lsEngine.state.closed === lsEngine.state.opened,
+      `opened=${lsEngine.state.opened} closed=${lsEngine.state.closed}`)
+    check('the probe never involves a remote shell', execCalls.length === 0, JSON.stringify(execCalls.length))
+  }
+
+  {
+    // A few SFTP servers reject the 'wx' flag string itself: the probe must
+    // retry once with the plain flag instead of giving up on the directory.
+    const fallbackEngine = fakeEngine(new Map(), new Set(['/srv/data']), { rejectExclusive: true })
+    const fallbackRoutes = makeRoutes({ engine: fallbackEngine, router: {}, forwards, shells, ctx: { get: () => undefined } })
+    const { res, state } = fakeRes()
+    await fallbackRoutes.find(route => route.path === ROUTES.ls).handler(fakeReq({
+      url: `${ROUTES.ls}?alias=a&path=${encodeURIComponent('/srv/data')}`,
+      headers: { host: 'localhost:4074' },
+    }), res)
+    const body = JSON.parse(state.body)
+    check('an exclusive-create refusal still ends writable after the plain-create retry',
+      body.writable === true, state.body)
+    check('the fallback is exactly one retry (two opens, no more)',
+      fallbackEngine.state.opened === 2, String(fallbackEngine.state.opened))
+    check('the retried probe is cleaned up too',
+      fallbackEngine.state.unlinked.filter(target => target.includes('.dsh-wprobe-')).length === 1,
+      JSON.stringify(fallbackEngine.state.unlinked))
+  }
+
+  {
+    // A read-only directory IS the verdict, not a route error: the listing
+    // must still reach the browser, carrying writable:false.
+    const deniedEngine = fakeEngine(new Map(), new Set(['/srv/locked']), { denyCreates: true })
+    const deniedRoutes = makeRoutes({ engine: deniedEngine, router: {}, forwards, shells, ctx: { get: () => undefined } })
+    const { res, state } = fakeRes()
+    await deniedRoutes.find(route => route.path === ROUTES.ls).handler(fakeReq({
+      url: `${ROUTES.ls}?alias=a&path=${encodeURIComponent('/srv/locked')}`,
+      headers: { host: 'localhost:4074' },
+    }), res)
+    const body = JSON.parse(state.body)
+    check('a refused create still answers 200 with the entries', state.status === 200 && Array.isArray(body.entries),
+      `${state.status} ${state.body}`)
+    check('a refused create reports writable:false', body.writable === false, state.body)
+    check('the refused probe still named a probe path',
+      deniedEngine.state.unlinked.some(target => target.includes('.dsh-wprobe-')),
+      JSON.stringify(deniedEngine.state.unlinked))
   }
 }
 

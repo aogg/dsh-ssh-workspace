@@ -90,6 +90,15 @@ for (const key of ['forwards.autoStart', 'forwards.autoStartHint']) {
   check(`${key} exists in en`, Object.hasOwn(en, key) && en[key] !== key)
 }
 
+// The default-directory field (host editor) and the shared breadcrumb bar ship
+// their own keys. The parity checks above only prove zh/en agree with EACH
+// OTHER — a key the client asks for but never defined would still render as
+// the raw key name, which is exactly the bug this suite exists for.
+for (const key of ['editor.defaultPath', 'editor.defaultPathHint', 'editor.badDefaultPath', 'path.crumbs']) {
+  check(`${key} exists in zh`, Object.hasOwn(zh, key) && zh[key] !== key)
+  check(`${key} exists in en`, Object.hasOwn(en, key) && en[key] !== key)
+}
+
 // ---------------------------------------------------------------------------
 console.log('\n[registration lifecycle]')
 
