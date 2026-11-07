@@ -11,3 +11,4 @@ verify-plugin.mjs
 tools/
 .test-shims/
 .trae/
+/.dsh/tmp
