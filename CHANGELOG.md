@@ -12,6 +12,7 @@
 
 ### 新增
 
+- **主机操作系统字段（`os`，win / mac / linux）**：主机条目新增可选 `os` 字段，钉死远端登录 shell 的命令方言——`win` → cmd.exe、`mac` / `linux` → POSIX shell，exec / 持久 shell / 终端 / 子进程桥 / 能力探测直接按它分派，不再发探测命令。面板主机编辑器新增「操作系统」下拉（Linux / macOS / Windows / 自动），**新建主机默认 Linux**；主机卡片的 meta 行显示当前生效值。兼容语义：缺省（老条目、手写条目、`~/.ssh/config` 回退）=「自动」，保持按连接探测的既有行为——一台探测出 Windows 的旧主机不会因为字段上线而翻车，编辑器里这类主机也先显示「自动」而不是默认 Linux，防止顺手一存就把方言钉错；选「自动」保存即删除字段、回到探测。保存时接受常见别名（`windows` → `win`，`macos` / `osx` / `darwin` → `mac`），认不出的值视为未设置不落盘。新增 `tests/host-os-smoke.mjs`（35 项），文档见 [docs/hosts.md](docs/hosts.md) 与 [docs/tools.md](docs/tools.md)。
 - **局域网部署支持（`allowLan`）**：新增插件配置 `allowLan`（默认 `false`，行为与文案完全不变）与可选 `allowedHosts`。webserver 绑定 `0.0.0.0`、浏览器从局域网访问时，路由此前一律 `forbidden: loopback-only`；开启后来源地址放宽到私网段（IPv4 RFC1918、IPv6 ULA/链路本地，公网仍拒），`Host` 头改为必须匹配本机真实网卡地址 + 端口（`os.networkInterfaces()` 收集，回环拼写始终有效），`allowedHosts` 可并入局域网主机名等额外值——防 DNS-rebinding 语义保留，不匹配的 Host 仍以 `forbidden: unexpected Host header …` 拒绝并区分原因。
 - **「新建本地工作区」的应用内浏览降级**：宿主组合的是 browse 目录选择后端（只有 `list` / `createDirectory` 原语）时，「新建本地工作区」此前每次都先调原生 `pick` 动词、失败后把「directory picker failed: … needs the native capability; the composed picker serves "browse"」弹成 toast。现在改走带结构化错误的 Remote 命名空间，识别 `directory-picker/unavailable` 后切换到应用内「选择本地目录」对话框（逐级浏览、就地新建文件夹、确认选择，样式与现有对话框一致，中英文案齐全）；能力类型记在模块内，后续打开直接走对应交互，不再先失败一次。`globalThis.__DSH_DIRECTORY_PICKER__` 桌面桥仍是最优先，pick 成功或其他错误码时行为不变。
 

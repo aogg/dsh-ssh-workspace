@@ -71,6 +71,7 @@ const SUITES = [
   'capabilities',
   'routes',
   'host-default-path',
+  'host-os',
   'boot',
   'secrets',
   'tool-schemas',

@@ -31,15 +31,17 @@
 | `host` / `port` / `user` | 连接目标；默认端口 22 |
 | `auth` | `{ kind: "key" \| "password" \| "agent", keyPath?, passphrase?, password?, agentPath? }` |
 | `description` / `tags` | 备注与标签（`ssh_workspace_hosts` 可搜索） |
+| `os` | 可选枚举 `win` \| `mac` \| `linux`，**钉死主机的操作系统**，也就是远端命令的 shell 方言：`win` → cmd.exe，`mac` / `linux` → POSIX shell（exec / shell / 终端 / 子进程桥全部跟随，见 [tools.md](./tools.md)）。缺省 = 不钉，引擎按连接探测登录 shell（老条目与 `~/.ssh/config` 回退主机的既有行为），所以面板编辑器里旧主机在保存前显示「自动」而不是默认 Linux——把一台探测出 Windows 的主机钉成 Linux 会让它的远端命令全部失灵。保存时接受常见别名（`windows` → `win`，`macos` / `osx` / `darwin` → `mac`），认不出的值视为未设置（不落盘）；选「自动」保存即删除该字段、回到探测 |
 | `agentForward` | 布尔。在远端**命令通道**（exec / shell / 终端 / 持久 shell）上转发本机 ssh-agent，使远端命令（如远端 `git push`）能用本机密钥认证，私钥不落到远端；SFTP（浏览 / 传输）不受影响，认证方式也不因此改变 |
 | `compress` | 布尔。传输压缩，以 CPU 换带宽，慢链路（跨国 / 移动网络）下明显更快 |
 | `defaultPath` | 可选字符串。面板「新建远程工作区」在该主机上浏览目录的**初始位置**（编辑器里的「新增工作区默认目录」），缺省 / 留空则打开 SSH 登录目录，字段不落盘。可在面板里浏览选定：新建工作区时勾选「设为本主机默认目录」，或在主机编辑器里用「选择…」按钮。保存时规范化：`\` 折算为 `/`、盘符路径补前导 `/`（`D:/code` → `/D:/code`）、折叠连续 `/`、除根 `/` 与裸盘符根（规范化为 `/D:/`）外去掉尾部 `/`；规范化后不是绝对路径的值会被拒绝（400）。示例：`/home/user` 或 `/D:/code/www` |
 | `proxyJump` | 非空时解析明确拒绝（见下） |
 | `createdAt` / `updatedAt` | 时间戳 |
 
-`agentForward` / `compress` 都是**可选布尔**：缺省等于 ssh2 默认（关闭），
-所以老版本写入的条目与新版本字节级兼容。面板的主机编辑器里以复选框呈现，
-勾掉即从文件中删除该字段，不会残留 `false`。
+`agentForward` / `compress` / `os` 都是**可选字段**：缺省等于既有默认（开关
+关闭、操作系统按连接探测），所以老版本写入的条目与新版本字节级兼容。面板的
+主机编辑器里 `agentForward` / `compress` 以复选框呈现，勾掉即从文件中删除该
+字段，不会残留 `false`；`os` 以下拉呈现，选「自动」保存即删除该字段。
 
 `agentForward` 是**逐通道**生效的：ssh2 的转发请求只能挂在 exec / shell 通道上，
 连接级同名字段会把整条连接（含只读 SFTP）都卷进来，本插件不使用它。转发的
