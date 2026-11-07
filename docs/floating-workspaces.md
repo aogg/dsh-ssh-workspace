@@ -49,9 +49,14 @@ viewport 里，Tab / Enter / Escape 走官方菜单的漫游路径。
 
 1. `POST /api/dsh-ssh-workspace/mount`，携带 `{ alias, remotePath, title, register: true }`；
 2. 同路径已注册则复用返回的 `workspaceId`（不会重复建条目）；
-3. 成功才进入浮动显示。失败（主机不存在、目录不存在、连接失败、目录不可写）
+3. 成功才进入浮动显示。失败（主机不存在、目录不存在、路径不是目录、连接失败）
    走插件既有 toast 报错，**不进入浮动**——把列表整块盖住却给一张空卡片，
    是比报错更糟的结果。
+
+**目录可写性不参与挂载判定**：`/mount` 只校验目标存在且是目录，不管写入权限。
+不可写目录在**添加对话框**里就地拦下（红色警告 + 保存按钮禁用，见「添加对话框」
+一节），与侧栏「新建远程工作区」对话框同一口径；已经配置好的条目若后来变只读，
+挂载照样成功，失败会落在第一次写文件时。
 
 ### 浮动形态：原生行 + 浮动皮肤
 
@@ -116,7 +121,7 @@ hero 的工作区按钮。非浮动时，属于浮动配置条目的标题（来
 
 | 操作 | 语义 |
 | --- | --- |
-| 改名 | 写回配置的 `title`。**只改配置**：已注册的 DSH 工作区保留它自己的标题（用户可在原生行的 ⋯ 里重命名），下次新挂载时用配置名。与父工作区同名的改名自动追加 ` #2`、` #3`，不会出现两行同名 |
+| 改名 | 写回配置的 `title`。**只改配置**：已注册的 DSH 工作区保留它自己的标题（用户可在原生行的 ⋯ 里重命名），下次新挂载时用配置名。去重在**同一父工作区下的其它条目**之间进行（`uniqueFloatingTitle` 只比较 siblings），撞名时自动追加 ` #2`、` #3`；不与父工作区自己的标题比较 |
 | 上移 / 下移 | `POST /floating/reorder`，回传整份 id 顺序，两个条目不会落成同一个位置 |
 | 测试连接 | 复用 `POST /test`（连一次即释放），结果走 toast，附带往返毫秒数 |
 | 删除 | 就地展开确认行；勾选「同时注销该 DSH 工作区」时，走与面板「卸载」**同一条** teardown 路径（`deregister`：停根 + 注销记录 + 归档会话 + 清停用标记），随后删除配置 |
@@ -206,8 +211,8 @@ hero 的工作区按钮。非浮动时，属于浮动配置条目的标题（来
 | `lib/client.js:4773` | `passFloatingDisplay`：行隐藏 + 卡片的一趟对齐 |
 | `lib/client.js:5114` | `installFloatingMenu`：⋯ 菜单注入（捕获 → pending → 追加 + 夹取） |
 | `lib/client.js:4972` / `:5050` | `renderFloatingSubmenu` / `positionFloatingSubmenu` |
-| `lib/client.js:5308` / `:5502` | `FloatingAddDialog` / `FloatingManageDialog` |
-| `lib/client.js:5765` | `installFloatingWorkspaces`：装配 + 自动进入 / 退出点击桥 + disposer |
+| `lib/client.js:5315` / `:5516` | `FloatingAddDialog` / `FloatingManageDialog` |
+| `lib/client.js:5779` | `installFloatingWorkspaces`：装配 + 自动进入 / 退出点击桥 + disposer |
 | `lib/client.js`（注入样式表） | 「floating remote workspaces」段的全部样式：卡片 / 头部 / 菜单块 / 对话框行；对话框本身在 `apply()` 里注册进 `shell.overlay` 槽 |
 
 ## 降级与已知限制
@@ -224,6 +229,7 @@ hero 的工作区按钮。非浮动时，属于浮动配置条目的标题（来
 | 同时只有一个浮动 | 再选另一个直接切换 |
 | 桌面上同一会话从搜索直接打开 | 会自动进入其浮动显示（点击路径）；不经过点击的入口不触发 |
 | 侧栏处于搜索 / 折叠态 | 找不到工作区树时不画卡片，也不隐藏任何行（骨架不在就不硬套） |
+| 侧栏切到「单列表」（flat）视图 | 单列表只画 `session:<id>` 行、没有工作区行，`findWorkspaceTree`（`lib/client.js:4608`）因此找不到树：行不隐藏、卡片不画（`:4801` / `:4849`），⋯ 菜单注入也没有 `workspace:` 锚点；标题维度的两处隐藏与视图无关，非浮动时照旧按标题生效 |
 
 ## 相关
 

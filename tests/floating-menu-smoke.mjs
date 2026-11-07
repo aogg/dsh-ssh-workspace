@@ -15,7 +15,9 @@
  *
  * No browser and no bundler: the floating section is sliced out of
  * `lib/client.js` and driven against a minimal DOM double, so the click path,
- * the mutation path and the submenu rendering all run for real.
+ * the mutation path and the submenu rendering all run for real. The one part
+ * that is pinned instead of run is `FloatingAddDialog`'s writability guard —
+ * that dialog is React-driven, so its wiring is read from the same slice.
  *
  * Run: node tests/floating-menu-smoke.mjs
  */
@@ -702,6 +704,40 @@ console.log('\n[disposer]')
   check('the card and its markers are gone',
     documentDouble.querySelector('[data-sshwsp-float-card]') === null &&
       documentDouble.querySelector('[data-sshwsp-float-region]') === null)
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n[add dialog: an unwritable directory blocks the save]')
+
+{
+  // Source pins, not a live render: the dialog is a React component behind
+  // useState / useEffect and a fetchJson round-trip, so re-running it would need
+  // a hooks simulator — a harness more brittle than the wiring it verifies. The
+  // behavioural half (the `/ls` verdict itself) is exercised for real in
+  // routes-smoke / probe-smoke; pinned here is that this dialog consumes it.
+  const dialogStart = floatingSource.indexOf('    function FloatingAddDialog (')
+  const dialogEnd = floatingSource.indexOf('    function FloatingManageDialog (', dialogStart)
+  if (dialogStart < 0 || dialogEnd < 0) throw new Error('client.js lost FloatingAddDialog')
+  const addDialog = floatingSource.slice(dialogStart, dialogEnd)
+
+  check('the dialog keeps a writability state seeded as writable (absent = not a "no")',
+    addDialog.includes('const [writable, setWritable] = React.useState(true)'))
+  check('the /ls reply\'s writable field is consumed, and only an explicit false is a verdict',
+    addDialog.includes('setWritable(data.writable !== false)'))
+  const staleGuard = addDialog.indexOf('if (seq !== loadSeq.current) return')
+  const writableWrite = addDialog.indexOf('setWritable(data.writable !== false)')
+  check('...after the stale-answer guard, so a slow older listing cannot flip it',
+    staleGuard > 0 && writableWrite > staleGuard, `guard@${staleGuard} write@${writableWrite}`)
+  check('the listing is the only writer (a host switch and a directory step both land here)',
+    (addDialog.match(/setWritable\(/g) ?? []).length === 1)
+  check('an unwritable directory shows the panel dialog\'s warning, gated on a resolved listing',
+    /path != null && !loading && loadError == null && !writable && jsx\('div', \{ className: 'sshwsp-warn', children: t\('remote\.notWritable'\) \}\)/.test(addDialog))
+  check('save is disabled on an unwritable directory',
+    addDialog.includes("const saveDisabled = saving || alias === '' || path == null || loading || loadError != null || !writable"))
+  check('the warning key exists in both locales',
+    (source.match(/'remote\.notWritable':/g) ?? []).length === 2)
+  check('the unused hostEditable variable is gone (this dialog has no default-path step)',
+    !addDialog.includes('hostEditable'))
 }
 
 // The menu disposer was installed separately above; call it last.
