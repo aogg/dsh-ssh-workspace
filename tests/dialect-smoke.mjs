@@ -26,6 +26,8 @@
  * Run: node tests/dialect-smoke.mjs
  */
 
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -33,6 +35,16 @@ const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.
 const { SshWorkspaceEngine } = await import(pathToFileURL(path.join(pluginRoot, 'lib/engine.js')).href)
 const { ShellManager } = await import(pathToFileURL(path.join(pluginRoot, 'lib/shell.js')).href)
 const { installRemoteSubprocess, uninstallRemoteSubprocess } = await import(pathToFileURL(path.join(pluginRoot, 'lib/patch-subprocess.js')).href)
+const { HostConfigStore } = await import(pathToFileURL(path.join(pluginRoot, 'lib/store.js')).href)
+const { HostStore } = await import(pathToFileURL(path.join(pluginRoot, 'lib/hosts.js')).href)
+
+// A hermetic host store: `remoteDialect` consults the entry's pinned `os`
+// before probing, and the DEFAULT store would read the developer's real
+// dsh-ssh.json — a test alias colliding with a real pinned host (e.g. a
+// live `win` entry) would skip the probe and fail these tests for the wrong
+// reason. Empty store ⇒ every alias here takes the probe path.
+const storeHome = mkdtempSync(path.join(tmpdir(), 'dsh-dialect-store-'))
+const HERMETIC_STORE = new HostStore(path.join(storeHome, 'ssh-config'), new HostConfigStore(path.join(storeHome, 'store.json')))
 
 let passed = 0
 let failures = 0
@@ -102,7 +114,7 @@ function pooledRecord (alias, client, extra = {}) {
 
 /** An engine with one pre-pooled record served by a scripted ssh2 client. */
 function dialectHarness (alias, steps, extra = {}) {
-  const engine = new SshWorkspaceEngine({})
+  const engine = new SshWorkspaceEngine({ store: HERMETIC_STORE })
   const { client, calls } = execScriptedClient(steps)
   const record = pooledRecord(alias, client, extra)
   engine.pool.set(alias, record)
@@ -188,7 +200,7 @@ console.log('\n=== dialect smoke ===\n')
   // The answer dies with the record: close it, pool a fresh record whose
   // login shell answers literally, and the next call must re-probe (and
   // believe the NEW answer).
-  const engine = new SshWorkspaceEngine({})
+  const engine = new SshWorkspaceEngine({ store: HERMETIC_STORE })
   try {
     const first = execScriptedClient([{ stdout: 'C:\\Windows\\system32\\cmd.exe\r\n', code: 0 }])
     engine.pool.set('rehomed', pooledRecord('rehomed', first.client))
@@ -386,4 +398,5 @@ function shellEngine (dialect, prepared) {
 }
 
 console.log(`\n=== ${passed} passed, ${failures} failed ===`)
+rmSync(storeHome, { recursive: true, force: true })
 process.exit(failures === 0 ? 0 : 1)

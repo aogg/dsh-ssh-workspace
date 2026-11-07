@@ -47,6 +47,7 @@ const SUITES = [
   'peer-mode',
   'diagnostics',
   'client-shape',  'backdrop-dismiss',
+  'os-marks',
   'path-crumbs',
   'default-path-ui',
   'browse-fallback',

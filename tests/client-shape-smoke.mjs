@@ -172,9 +172,12 @@ if (typeof clientRel === 'string' && existsSync(path.join(packageRoot, clientRel
   check('the collector is extractable for a behaviour test', start !== -1 && end > start, 'collector not found')
   if (start !== -1 && end > start) {
     const sandbox = { remoteMarks: {}, knownDisabledPaths: new Set() }
-    const factory = new Function('remoteMarks', 'knownDisabledPaths',
+    // The collector also maps each identity to the alias's pinned OS; an
+    // EMPTY map keeps every row unpinned (the generic mark), which is the
+    // baseline this behaviour test has always exercised.
+    const factory = new Function('remoteMarks', 'knownDisabledPaths', 'hostOsByAlias',
       `${client.slice(start, end)}; return collectRemoteWorkspaces;`)
-    const collect = factory(sandbox.remoteMarks, sandbox.knownDisabledPaths)
+    const collect = factory(sandbox.remoteMarks, sandbox.knownDisabledPaths, new Map())
     collect([
       { id: 'ws-off', path: 'ssh://box/srv/off', title: 'off', sessionIds: ['s1', 's2'] },
       { id: 'ws-on', path: 'ssh://box/srv/on', title: 'on', sessionIds: ['s3'] },
