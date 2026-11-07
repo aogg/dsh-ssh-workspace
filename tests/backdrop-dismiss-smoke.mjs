@@ -185,15 +185,15 @@ check('the helper is declared in the factory scope beside the components, not at
 console.log('\n[wiring]')
 
 const backdrops = [...source.matchAll(/className: 'sshwsp-backdrop'[^\n]*/g)].map(match => match[0])
-check('all six dialog backdrops were found', backdrops.length === 6, `${backdrops.length} found`)
+check('all eight dialog backdrops were found', backdrops.length === 8, `${backdrops.length} found`)
 check('no backdrop still dismisses on a raw onClick',
   backdrops.every(line => !/onClick/.test(line)),
   backdrops.filter(line => /onClick/.test(line)).join(' | '))
 check('every backdrop spreads backdropDismiss',
-  backdrops.length === 6 && backdrops.every(line => line.includes('...backdropDismiss(')),
+  backdrops.length === 8 && backdrops.every(line => line.includes('...backdropDismiss(')),
   backdrops.join(' | '))
-check('the helper is wired at exactly six call sites',
-  (source.match(/\.\.\.backdropDismiss\(/gu) ?? []).length === 6,
+check('the helper is wired at exactly eight call sites',
+  (source.match(/\.\.\.backdropDismiss\(/gu) ?? []).length === 8,
   `${(source.match(/\.\.\.backdropDismiss\(/gu) ?? []).length} call(s)`)
 
 console.log('\n[wiring: each dialog keeps its own busy guard]')
@@ -257,7 +257,7 @@ function guardOf (componentName) {
 console.log('\n[the dialog body still stops propagation-free dismissal]')
 
 check('the inner dialog panels keep their own click handling (unchanged)',
-  (source.match(/className: 'sshwsp-dialog[^']*', onClick: \((?:event|e)\) => (?:event|e)\.stopPropagation\(\)/gu) ?? []).length === 6,
+  (source.match(/className: 'sshwsp-dialog[^']*', onClick: \((?:event|e)\) => (?:event|e)\.stopPropagation\(\)/gu) ?? []).length === 8,
   `${(source.match(/className: 'sshwsp-dialog[^']*', onClick: \((?:event|e)\) => (?:event|e)\.stopPropagation\(\)/gu) ?? []).length} panel(s)`)
 
 console.log(`\n=== ${passes.length} passed, ${failures.length} failed ===`)

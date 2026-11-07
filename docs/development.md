@@ -23,7 +23,7 @@
 | `lib/forward-persist.js` | 已存映射：**意图**（`enabled`）与**事实**（`live`）分离、启动时自动开启、`closeById` / `closeAlias` 两条断开路径（后者逐条走前者） |
 | `lib/transfer.js` | 文件传输：本机 ↔ 远端的流式 SFTP 拷贝与目录树上传（原子发布） |
 | `lib/store.js` | `$DSH_HOME/dsh-ssh.json` 存储：校验、合并（保留未知字段）、原子写 |
-| `lib/routes.js` | 浏览器半边的 22 条 HTTP 路由（hosts / save / delete / forget-key / disconnect / test / ls / status / mount / unmount / enable / forward / unforward / forward-save / toggle / delete / remember / probe / settings / transfer / download / upload） |
+| `lib/routes.js` | 浏览器半边的 33 条 HTTP 路由（hosts / save / default-path / delete / forget-key / disconnect / test / ls / status / mount / unmount / enable / agent-prompts ×5 / floating ×5 / forward / unforward / forward-save / toggle / delete / remember / probe / settings / transfer / download / upload） |
 | `lib/shell.js` | 远端持久 shell 会话：`cd` / 导出变量 / 后台任务跨调用保留 |
 | `lib/tools.js` | 10 个 `ssh_workspace_*` Agent 工具（schema / 渲染 / 执行） |
 | `lib/peers.js` | 依赖定位与加载：本包 `node_modules` → `DSH_PEER_ROOT` → 各 profile → 部署自带树 |
@@ -114,14 +114,12 @@ profile 安装（`pnpm install`）会让第 1 步命中 profile 内的解析链�
 ## 冒烟测试与 CI
 
 `tests/` 下是一组按依赖分层的冒烟套件；`npm test`（即 `node tests/run.mjs`）依次以子进程运行
-全部套件（也可 `node tests/run.mjs live acceptance` 只跑指定套件）。共 30 个套件，
-断言数如下（下表按裸检出实测，`DSH_CORE_ROOT` / `DSH_WS_TEST_ALIAS` 未设置时
-6 个套件整体 SKIP，其余 24 个套件合计 989 项断言；`DSH_CORE_ROOT` 指向真实装配树时
-`projection-real` / `lifecycle` / `tool-schemas` / `boot` 四个跑起来，合计 **1212** 项，此时只剩
-**3 条 SKIP 行**：`live` 与 `acceptance` 整体跳过，加上 `boot-smoke` 内部那段需要真实主机的
-远端检查——`boot-smoke` 本身仍在运行并贡献 29 项断言，所以「跳过套件数」是 2 个、
-SKIP 行是 3 条，两者不要混用）。下表的项数是数每个套件打印的 `PASS` 行得到的，
-不要与末尾 `=== N passed` 那行相加——`locale-register` 与 `secrets` 的收尾格式不同。
+全部套件（也可 `node tests/run.mjs live acceptance` 只跑指定套件）。共 42 个套件，
+断言数按套件打印的 `PASS` 行数计（下表数字为裸检出实测；`DSH_CORE_ROOT` /
+`DSH_WS_TEST_ALIAS` 未设置时 6 个套件整体 SKIP——`projection-real`、`lifecycle`、
+`boot`、`tool-schemas`、`live`、`acceptance`；`boot` 本身仍在运行并贡献断言，
+另有 3 条 SKIP 行来自它内部需要真实主机的远端检查）。下表的项数不要与末尾
+`=== N passed` 那行相加——`locale-register` 与 `secrets` 的收尾格式不同。
 
 | 套件 | 前置 | 项数 | 覆盖 |
 | --- | --- | --- | --- |
@@ -147,9 +145,12 @@ SKIP 行是 3 条，两者不要混用）。下表的项数是数每个套件打
 | `forward-smoke` | 无 | 34 | 隧道本身：建立 / 拆除、`closeForAlias` 按主机拆除且**只拆该主机**、`holds` 引用计数、关闭转发不得断开主机 |
 | `forward-persist-smoke` | 无 | 102 | 已存映射：意图 / 事实分离、端口预检三态、占用端口不落盘、自动开启幂等、连接断开留痕、**主动断开主机与端口行「断开」逐字段一致**（`live` / `enabled` / `error` 三元组） |
 | `capabilities-smoke` | 无 | 19 | 主机能力探测（rg / git / inotifywait）与提示渲染 |
-| `routes-smoke` | 无 | 126 | 22 条路由的请求 / 响应契约、两种卸载模式、归档、停用围栏、`sessionIds` 强制转字符串、断开必须连带拆除转发且走 `closeAlias`、下载失败必须是非 2xx |
+| `floating-store-smoke` | 无（路由段需 peer 树） | 59 | 浮动远端的存储与路由：段归一化（坏条目只丢自己、`hosts` 不受影响）、自动命名与同父去重、改名/排序/删除、五条路由的 join 状态（mounted / registered / hostMissing / parentMissing）、幂等 save、`deregister` 走与「卸载」同一条 teardown |
+| `floating-menu-smoke` | 无 | 37 | ⋯ 菜单注入：只认官方 aria 模板、未分组桶跳过、**只追加在已有项之后**、marker 防重、注入后视口夹取、二级菜单按配置出条（含状态徽标）、空态与刷新重绘、Esc/外点收起、aria 失配时菜单原样、disposer 摘监听与卡片 |
+| `floating-display-smoke` | 无 | 50 | 浮动显示的两个纯判定（非浮动 = 隐藏配置项；浮动 = 只留目标）+ CSS 契约：不透明 `bg-layer` 背景、`min-height: 100%` 覆盖、头部 46px 与树偏移、3px 强调色带、`translateX(-100%)` 140ms 滑入、`!important` 行隐藏规则、reduced-motion 关闭动画 |
+| `routes-smoke` | 无 | 126 | 33 条路由的请求 / 响应契约、两种卸载模式、归档、停用围栏、`sessionIds` 强制转字符串、断开必须连带拆除转发且走 `closeAlias`、下载失败必须是非 2xx |
 | `secrets-smoke` | 无 | 26 | 凭据存储与加密、迁移、`~/.ssh/config` 明文兼容、密钥文件按需创建 |
-| `lifecycle-smoke` | `DSH_CORE_ROOT` | SKIP | 真实 Cordis 下 5 种服务装配顺序的接管 / 路由 / 工具注册（期望 22 路由 / 10 工具） |
+| `lifecycle-smoke` | `DSH_CORE_ROOT` | SKIP | 真实 Cordis 下 5 种服务装配顺序的接管 / 路由 / 工具注册（期望 33 路由 / 10 工具） |
 | `boot-smoke` | `DSH_CORE_ROOT`（远端段另需 `DSH_WS_TEST_ALIAS`） | SKIP | 生产顺序引导、`ctx.fs` 接管与还原、工具端到端、挂载 → 停用 → 读被拒 → 启用往返 |
 | `tool-schemas-smoke` | `DSH_CORE_ROOT` | SKIP | 工具 schema 过真实 `assertSupportedJsonSchema` + render 冒烟（160 项） |
 | `projection-real-smoke` | `DSH_CORE_ROOT` | SKIP | `UPSTREAM-1` 补丁对**真实** `SessionProjectionRegistry` + `WorkingDirectoryService` + 真实 zod，按生产顺序装配：复现 `Invalid input` → 打补丁后 `restore` / `viewCheckpoint` 双双通过 → 报告 `probe: 'broken'` → 卸载后已打开的 ssh:// 会话仍可读。第一节断言的是**缺陷仍然存在**，红 = 删补丁（失败信息自带删除清单） |

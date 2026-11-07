@@ -239,6 +239,7 @@ npm ci          # ssh2 是直接依赖，不随 clone 到位
 | 拖拽 / 右键把文件加入任务 | 文件树的文件与文件夹可**直接拖到聊天输入框**（悬停显示虚线高亮，松开插入引用 chip），或**右键「添加到任务」**——与 `@` 补全选中效果完全一致 |
 | 「添加工作区」远程入口 | 「添加工作区」按钮替换为锚定菜单：「新建本地工作区」（DSH 原生选择器；宿主只提供应用内浏览后端时自动降级为应用内「选择本地目录」对话框——逐级浏览、就地新建文件夹、确认选择，且能力类型会被记住，后续打开不再先失败一次）或「新建远程工作区」（选主机 → 逐级浏览远端目录 → 确认挂载；目录不可写时警告并拒绝创建） |
 | 远程工作区专用标记 | 本插件创建的远程工作区在侧栏行、工作区选择器与会话页工作区按钮处显示远端标记图标，而不是普通文件夹图标；主机钉了 `os` 时标记随之分形（win 四窗格 / mac ⌘ / linux 终端提示符），未钉的保持通用标记 |
+| 浮动远端工作区 | 一个项目需要多条 SSH 远端时，在它的工作区行 ⋯ 菜单里配置「SSH 远程工作区」：条目挂在**该项目**名下，不占固定工作区行；选中后一个不透明卡片从左侧滑入盖住侧栏列表，卡内是该工作区的**原生行**（新建会话、重命名、删除、归档、收藏、拖拽与其它插件注入的菜单项全部照旧）。名称自动生成（`目录名 · 主机别名`），另有添加 / 管理对话框（改名、排序、测试连接、删除时可同时注销工作区、清理失效条目）。详见 [docs/floating-workspaces.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/floating-workspaces.md) |
 | 主机管理面板 | 添加 / 编辑 / 删除主机（私钥路径、认证方式、操作系统 win/mac/linux、备注等），改动立即生效并丢弃该别名旧连接；`~/.ssh/config` 主机只读展示；「测试连接」只探测可达性（连上即释放，不会留下连接），结果以顶部 toast 弹出，数秒自动消失（点击可提前关闭）；「已连接」状态内联在主机名后，断开时连带拆除该主机的端口转发 |
 | 浏览目录对话框 | 主机卡片的「浏览目录」逐级浏览远端目录、上传文件到当前目录、逐行下载文件，并可就地「挂载此目录」 |
 | 文件面板上传 / 下载 | 「工作区文件」面板头部有「上传文件到此目录」，文件树行右键菜单另有「下载到本机」/「上传文件到此目录」（仅远端行） |
@@ -296,7 +297,9 @@ exec 通道；空闲 30 分钟回收（有操作在飞的连接不回收）。
 | [hosts.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/hosts.md) | 主机配置与认证：存储格式、`~/.ssh/config` 回退、面板管理 |
 | [agent-prompts.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/agent-prompts.md) | Agent 提示词三级配置：全局 → 主机 → 工作区的合并、禁用语义、脚本协议、注入机制与刷新时机 |
 | [tools.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/tools.md) | Agent 工具参考：十个 `ssh_workspace_*` 工具 |
-| [ui.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/ui.md) | 界面指南：面板、添加工作区双入口、远程工作区标记、端口转发与持久会话区 |
+| [ui.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/ui.md) | 界面指南：面板、添加工作区双入口、远程工作区标记、浮动远端、端口转发与持久会话区 |
+| [floating-workspaces.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/floating-workspaces.md) | 浮动远端工作区：⋯ 菜单二级菜单、浮动卡片、添加 / 管理对话框、存储与路由、降级点 |
+| [被扩展说明.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/被扩展说明.md) | 对 DSH 官方工作区 ⋯ 菜单与工作区树的 DOM 扩展：与 ao-local / better-sidebar 的共存契约、降级矩阵 |
 | [forward-persistence.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/forward-persistence.md) | 端口转发持久化：意图与事实的分离、两条断开路径的一致性、自动开启 |
 | [unmount-modes.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/unmount-modes.md) | 卸载的两种模式：`detach`（可逆）与 `deregister`、会话归档、停用围栏 |
 | [development.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/development.md) | 开发、调试与发布：源码结构、依赖解析、打包流程 |
