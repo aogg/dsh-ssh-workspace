@@ -97,10 +97,12 @@ const directorySchema = z.string().min(1).refine(isAbsolute).nullable()
 
 ## 连接问题
 
-**先看诊断历史**：`ssh_workspace_status` 的 `events` 字段记录最近 40 条状态转换（连接、
+**先看诊断历史**：`ssh_workspace_status` 的 `events` 字段记录最近 40 条状态转换（连接、**连接失败**、
 断连、重连、降级），最新的在最后。它通常是「刚才发生了什么」最快的答案：一条 `disconnect`
 带时间戳，比读日志快得多——何况这个部署里 `ctx.logger` 根本没有出口（宿主不装 console
 exporter，`debug` 又被默认级别丢弃），见 [development.md](./development.md#日志与诊断)。
+连接失败会以 `connect failed (<分类>): host "别名" (user@host:port)` 的形态出现在这里，
+分类即下表的「分类」列。
 
 `degraded` 尤其值得注意，它表示功能悄悄降级了：
 
@@ -109,6 +111,37 @@ exporter，`debug` 又被默认级别丢弃），见 [development.md](./developm
 - `stream channel unavailable` —— 大文件读取退回了共享 SFTP 通道，会拖慢同连接上的其它操作。
 
 两者都不影响正确性，但会让"为什么没反应 / 为什么变慢了"有据可查。
+
+### 连接失败错误对照表
+
+连接失败不再透传 ssh2 的原始报错，而是统一富化为（`lib/connection-errors.js`）：
+
+```
+host "别名" (user@host:port): <一句话摘要>
+<排查建议，两三种可能原因与对应动作>
+```
+
+原始错误保留在错误的 `cause` 里。摘要与建议按连接生命周期分类，对照如下（首行摘要 → 分类 → 常见原因 → 怎么排查）：
+
+| 首行摘要（原始报错） | 分类 | 常见原因 | 排查建议 |
+| --- | --- | --- | --- |
+| no answer from the server while connecting (waited Ns)（`Timed out while waiting for handshake` / `ETIMEDOUT`） | `timeout` | 主机不可达或极慢：IP/端口写错、主机关机、防火墙丢包、**VPN / 内网穿透隧道断开**；也可能端口通了但握手卡住（端口背后不是 sshd、sshd 挂死或严重过载、中间设备拦截） | 确认主机在线；本机 `ssh -p <port> <user>@<host>` 或 `ping <host>` 验证；走隧道/虚拟网络的主机先确认隧道本身活着 |
+| the server actively refused the connection on that port（`ECONNREFUSED`） | `refused` | 主机在线，但目标端口没有进程监听：sshd 未运行，或端口写错 | 检查 sshd 服务状态（如 `systemctl status sshd`）与监听端口，核对面板里保存的端口 |
+| the host name could not be resolved to an address（`getaddrinfo ENOTFOUND`） | `dns` | 主机名无法解析 | 核对主机名 / IP 拼写；本机 `ping <host>` 确认从**这台机器**能解析（别处能解析、本机不能，仍是这个错） |
+| no network route to the host（`EHOSTUNREACH` / `ENETUNREACH`） | `unreachable` | 无路由可达 | 确认两机同网络/同网段、路由或承载它的 VPN/隧道在位、主机开机 |
+| the connection was cut while being established（`ECONNRESET` / `ECONNABORTED`） | `reset` | 连接建立途中被重置：网络抖动、严格防火墙、中间设备丢会话 | 先重试一次；反复出现再查两机之间的网络路径（VPN、隧道、防火墙） |
+| the SSH handshake broke before it completed | `protocol` | 端口通了但不是能用的 SSH 服务：其它服务占了端口、sshd 崩溃/过载、中间设备拦截 | 本机 `ssh -p <port> <user>@<host> -v` 看握手停在哪一步 |
+| the server rejected the configured credentials（`All configured authentication methods failed`） | `auth` | 凭据被拒：用户名、密码、密钥或 agent 有一条不对 | 核对面板里的用户名与密码/密钥/agent 配置；本机 `ssh <user>@<host>` 用同凭据对照，分清是凭据问题还是插件配置问题 |
+| the server presented a host key that was rejected（含 recorded/presented 两个指纹） | `hostkey` | 主机密钥与首次连接记录不一致 | 见下文第 4 条「主机密钥不匹配」 |
+| could not open an SFTP channel: …（连接本身已成功） | 通道层 | sshd 未启用 sftp subsystem | 检查主机 sshd_config 里的 `Subsystem sftp`（如 `internal-sftp`） |
+
+配置类失败（密码缺失、密钥文件不存在、agent 不可用）在连接发起前就抛出，保持各自的原始文案，
+不进这张表；主机密钥不匹配的完整处理见上面第 4 条。
+
+> 真实案例：`mac-dind`（10.8.8.32）所在 easytier 虚拟网络中断重启，主机短暂不可达，连续两次
+> `Error: Timed out while waiting for handshake`。富化后的文案会点名主机、端点与已等待秒数，
+> 并把「隧道断开」列为首位可疑原因；同类事件同时写入诊断历史（kind=`error`），在
+> `ssh_workspace_status` 里能看到 `connect failed (timeout): host "mac-dind" (…)`。
 
 按以下顺序排查：
 

@@ -46,6 +46,7 @@ const SUITES = [
   'agent-prompts-routes',
   'peer-mode',
   'diagnostics',
+  'connection-errors',
   'client-shape',  'backdrop-dismiss',
   'os-marks',
   'floating-display',
