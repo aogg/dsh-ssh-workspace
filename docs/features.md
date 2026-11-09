@@ -15,7 +15,7 @@
 | 项 | 数值 |
 | --- | --- |
 | Agent 工具 | 10 个 `ssh_workspace_*` |
-| 浏览器 HTTP 路由 | 33 条（前缀 `/api/dsh-ssh-workspace/`，仅回环 + Host 头校验） |
+| 浏览器 HTTP 路由 | 33 条（前缀 `/api/dsh-ssh-workspace/`，默认仅回环 + Host 头校验；webserver 绑 `0.0.0.0` 时 `allowLan` 缺省自动放宽到私网，见 [allowLan](../README.md#局域网部署allowlan)） |
 | 接管的服务 seam | 4 个：`ctx.fs`、`ctx.shell`、`ctx.subprocess`、`ctx.subprocess.spawnTerminal` |
 | 桥接的宿主内建模块 | 2 个：`node:fs/promises`、`node:path` |
 | 冒烟测试套件 | 42 个（6 个需真实主机 / 完整 DSH 树，未配置时整段 SKIP） |
@@ -279,7 +279,7 @@
 | 主机密钥 TOFU | 首连记录服务器主机密钥 SHA256 指纹；之后指纹变更**拒绝连接**并提示新旧指纹，防中间人；主机重装后在面板「忘记主机密钥」重新信任 |
 | 文件权限 | 存储文件 0600、目录 0700（POSIX）；旧文件补一次 `chmod`（best-effort，win32 上 mode 语义有限，不能因此阻断） |
 | 并发写 | `mutateHosts` 原子读改写 + 零依赖文件锁，避免面板与工具同时改存储时丢更新 |
-| 路由加固 | 仅回环来源 + `Host` 头必须是本端口的回环拼写（堵 DNS rebinding）+ 写操作要求 JSON `Content-Type`；`/download` `/upload` 另行各自施加双重校验 |
+| 路由加固 | 默认仅回环来源 + `Host` 头必须是本端口的回环拼写（堵 DNS rebinding）+ 写操作要求 JSON `Content-Type`；`allowLan` 生效（显式 true，或 webserver 绑 `0.0.0.0` 时的缺省）后来源放宽到私网、`Host` 接受本机地址 / `allowedHosts` / 私网 IP 字面量，主机名仍只认白名单；`/download` `/upload` 另行各自施加双重校验 |
 | 连接复用与回收 | 每别名一条长连接；空闲 **30 分钟**回收，有操作在飞的连接不回收；握手超时 **15 s**、keepalive **15 s**、扫描周期 **60 s** |
 | 能力探测 | 挂载时一次往返探测 `rg` / `git` / `inotifywait`，只把**已知缺失**的项报成提示（探测不出来不算失败）；经**原始连接**探测，绕开停用围栏 |
 

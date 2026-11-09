@@ -24,6 +24,7 @@
 | `lib/transfer.js` | 文件传输：本机 ↔ 远端的流式 SFTP 拷贝与目录树上传（原子发布） |
 | `lib/store.js` | `$DSH_HOME/dsh-ssh.json` 存储：校验、合并（保留未知字段）、原子写 |
 | `lib/routes.js` | 浏览器半边的 33 条 HTTP 路由（hosts / save / default-path / delete / forget-key / disconnect / test / ls / status / mount / unmount / enable / agent-prompts ×5 / floating ×5 / forward / unforward / forward-save / toggle / delete / remember / probe / settings / transfer / download / upload） |
+| `lib/access-policy.js` | 浏览器路由的 LAN 开关：`allowLan` 三态（显式 true/false 优先，缺省跟随 `webserver.host === '0.0.0.0'`）。纯函数、无宿主依赖，所以「忘了写开关」这个最常见的部署状态能被测试直接执行，而不是只能靠一台真机撞上 403 |
 | `lib/shell.js` | 远端持久 shell 会话：`cd` / 导出变量 / 后台任务跨调用保留 |
 | `lib/tools.js` | 10 个 `ssh_workspace_*` Agent 工具（schema / 渲染 / 执行） |
 | `lib/peers.js` | 依赖定位与加载：本包 `node_modules` → `DSH_PEER_ROOT` → 各 profile → 部署自带树 |

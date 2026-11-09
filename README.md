@@ -161,7 +161,7 @@ npm ci          # ssh2 是直接依赖，不随 clone 到位
 | --- | --- | --- |
 | `enabled` | `true` | 总开关 |
 | `announceToAgent` | `false` | 是否向每个 agent 注入能力说明（系统提示词段落） |
-| `allowLan` | `false` | 局域网部署：浏览器的 HTTP 路由接受私网来源地址（IPv4 RFC1918、IPv6 ULA/链路本地） |
+| `allowLan` | 自动 | 局域网部署：**缺省跟随 webserver 绑定**——绑 `0.0.0.0` 时开启，其它（含未配置 webServer）保持仅回环；显式 `true` / `false` 优先 |
 | `allowedHosts` | `[]` | 额外放行的 `Host` 值（配合 `allowLan`，如面板经局域网主机名访问时） |
 | `engine.idleTimeoutMs` | `1800000` | 连接空闲超过该时长后回收（毫秒） |
 | `engine.connectTimeoutMs` | `15000` | 单次 SSH 连接握手超时（毫秒） |
@@ -174,13 +174,26 @@ npm ci          # ssh2 是直接依赖，不随 clone 到位
 
 默认只接受**本机回环**访问（`127.0.0.1` / `::1` / `localhost`）。webserver 绑定
 `0.0.0.0`、浏览器从局域网另一台机器访问时，请求会被 `forbidden: loopback-only`
-拒绝——这是防 DNS-rebinding 的围栏，不是故障。设 `allowLan: true` 后：
+拒绝——这是防 DNS-rebinding 的围栏，不是故障。
+
+`allowLan` 是**三态**：显式 `true` / `false` 优先；都不写时**跟随 webserver 的绑定**
+（`webserver.host === '0.0.0.0'` 视为开启，因为绑全接口本身就是「允许被别处访问」的
+表态；绑回环或没有 webServer 时保持仅回环）。所以只绑 `0.0.0.0` 的部署**不需要**
+额外配置就能从局域网打开面板。开启后：
 
 - 来源地址放宽到**私网地址**（IPv4 `10/8`、`172.16/12`、`192.168/16`；IPv6 ULA
   `fc00::/7` 与链路本地 `fe80::/10`），公网地址仍被拒绝；
-- `Host` 头必须命名**本机真实监听地址**（由本机各网卡地址 + 端口拼出，回环拼写
-  始终有效），不匹配的 Host 仍以 `forbidden: unexpected Host header …` 拒绝——
-  防 rebinding 语义原样保留；
+- `Host` 头接受三类值：**本机真实监听地址**（各网卡地址 + 端口，回环拼写始终有效）、
+  `allowedHosts` 里配置的值、以及**私网 IP 字面量**（IPv4 可带端口；IPv6 带方括号，
+  可带端口）。第三类是为 Docker 端口映射 / `ssh -L` / 反向代理准备的：浏览器发的是
+  它拨号的那个地址（例如宿主的 `172.19.0.199`），而容器只看得见自己的网卡
+  （`172.21.0.199`），按「必须是本机网卡地址」判定时这类部署会被全拒；
+- **主机名**仍然只认 `allowedHosts` 里列出的：rebinding 攻击必须把攻击者自己的域名
+  当 `Host` 发送，域名不在白名单里就被拒，所以防 rebinding 语义没有变；公网 IP 字面量
+  也仍被拒绝；
+- 被拒绝时服务端会写一条 warn 日志，带上 `mode`、来源地址、`Host` 与修复建议——
+  响应体保持历史措辞不变（`forbidden: loopback-only` / `forbidden: unexpected Host
+  header …`），排查请看日志；
 - 若面板经一个本机网卡不知道的名字访问（局域网主机名、反代拼写），把它加进
   `allowedHosts`（大小写与首尾空白不敏感，可带端口也可不带）；
 - POST 的 JSON content-type 校验、405/415 等其余防护不变。

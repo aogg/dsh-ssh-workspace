@@ -22,6 +22,11 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
+// Pure, peer-free: the LAN switch must be checkable even on a bare checkout,
+// which is where the interesting cases (absent config, no webserver service)
+// actually happen.
+import { resolveAllowLan } from '../lib/access-policy.js'
+
 const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 let passed = 0
@@ -76,6 +81,43 @@ console.log('\n=== routes smoke ===\n')
   if (missing.length === 0) {
     check('every SFTP helper the transfer routes call is imported', true)
   }
+}
+
+// ---------------------------------------------------------------------------
+// The LAN switch is DERIVED, not only configured
+// ---------------------------------------------------------------------------
+// The reported bug: a deployment whose webserver is bound to `0.0.0.0` — so it
+// is already listening on every interface — still answered
+// `403 forbidden: loopback-only` to every panel request, because `allowLan`
+// defaulted to false and nobody had set it. Binding `0.0.0.0` is the
+// operator's statement that the server may be reached from elsewhere, so the
+// default follows it; an explicit true/false still wins. These cases are pure
+// (no DSH tree, no server), so they run on a bare checkout too.
+{
+  const cases = [
+    ['explicit true wins over a loopback bind', { configAllowLan: true, bindHost: '127.0.0.1' }, true],
+    ['explicit false wins over an all-interfaces bind', { configAllowLan: false, bindHost: '0.0.0.0' }, false],
+    ['absent config follows 0.0.0.0', { bindHost: '0.0.0.0' }, true],
+    ['absent config follows a loopback bind', { bindHost: '127.0.0.1' }, false],
+    ['absent config and no webServer stays loopback', {}, false],
+    ['an empty bind host is not 0.0.0.0', { bindHost: '' }, false],
+    ['the IPv6 wildcard is not treated as all-interfaces', { bindHost: '::' }, false],
+    ['a concrete interface bind stays loopback unless asked', { bindHost: '172.21.0.199' }, false],
+  ]
+  for (const [label, input, expected] of cases) {
+    check(`resolveAllowLan: ${label}`, resolveAllowLan(input) === expected, String(resolveAllowLan(input)))
+  }
+  // The plugin must actually consult the resolver. A source check, because the
+  // wiring lives inside a `ctx.inject(['fs','webServer'])` callback this suite
+  // never runs; `config.allowLan === true` is exactly the line that shipped the
+  // bug, so it must not come back.
+  const indexSource = readFileSync(path.join(pluginRoot, 'lib', 'index.js'), 'utf8')
+  check('lib/index.js resolves allowLan instead of reading the config directly',
+    /allowLan: resolveAllowLan\(\{ configAllowLan: config\.allowLan, bindHost: webServer\.host \}\)/u.test(indexSource),
+    'the route deps no longer derive the switch from the bind host')
+  check('...and no longer uses the old literal comparison',
+    !/allowLan: config\.allowLan === true/u.test(indexSource),
+    '`allowLan: config.allowLan === true` is the line that made LAN deployments 403')
 }
 
 // routes.js pulls the SFTP primitives from remote-fs.js, which resolves the DSH
@@ -1119,13 +1161,25 @@ function fakeUploadReq ({ url, host = 'localhost:4074', chunks, method = 'POST' 
 // page must send its own hostname, so the anti-rebinding property carries
 // over. The default mode keeps its historical wording byte for byte, asserted
 // here explicitly so a future rewording is a conscious act.
+//
+// The Host half ALSO admits a private IP literal. The browser sends the address
+// it dialled, and a Docker port mapping / SSH tunnel / reverse proxy makes that
+// the HOST's address, which the container's own interface list does not hold
+// (this deployment: browser dials 172.19.0.199, the container is 172.21.0.199).
+// A HOSTNAME is still refused unless `allowedHosts` lists it, which is what
+// keeps the rebinding fence meaningful: a rebinding page must send its own
+// hostname, and that name is in no list.
 {
+  /** Warnings written through the injected logger, for the refusal assertions. */
+  const logged = []
+  const logger = { warn: (line) => logged.push(line) }
+
   const doubles = () => ({
     engine: { pool: new Map(), store: { rows: () => [] } },
     router: { listRoots: () => [], listDisabled: () => [] },
     forwards: { list: () => [] },
     shells: { list: () => [] },
-    ctx: { get: () => undefined },
+    ctx: { get: () => undefined, logger },
   })
 
   // The engine behind the streaming routes must be able to serve a file, so
@@ -1185,11 +1239,57 @@ function fakeUploadReq ({ url, host = 'localhost:4074', chunks, method = 'POST' 
     check('allowLan still refuses a rebinding Host header', state.status === 403, String(state.status))
     check('...naming the Host header as the cause', JSON.parse(state.body).error.includes('unexpected Host header'), state.body)
   }
-  // A Host naming a DIFFERENT private address is not this server.
+  // ...and so is a hostname that merely LOOKS local: the widening is for IP
+  // literals, not for names this machine does not own. This is the assertion
+  // that keeps the rebinding fence from eroding into "any private-looking Host".
+  {
+    const { res, state } = fakeRes()
+    await lanStatus.handler(fakeReq({ remoteAddress: '192.168.1.244', headers: { host: 'my-laptop.lan:4074' } }), res)
+    check('allowLan refuses an unconfigured host name', state.status === 403, String(state.status))
+    check('...with the wording that names the Host header',
+      JSON.parse(state.body).error.includes('unexpected Host header'), state.body)
+  }
+  // A Host naming a DIFFERENT private ADDRESS is admitted. This is the case the
+  // old rule refused and the one that made LAN deployments unusable: behind a
+  // Docker port mapping the browser's Host is the host's address, not the
+  // container's, so "must be one of MY interfaces" was unsatisfiable.
   {
     const { res, state } = fakeRes()
     await lanStatus.handler(fakeReq({ remoteAddress: '192.168.1.244', headers: { host: '192.168.1.1:4074' } }), res)
-    check('allowLan refuses a Host that names another machine', state.status === 403, String(state.status))
+    check('allowLan admits a private IPv4 literal Host', state.status === 200, `${state.status} ${state.body}`)
+  }
+  // The same literal without a port: a reverse proxy may normalise it away.
+  {
+    const { res, state } = fakeRes()
+    await lanStatus.handler(fakeReq({ remoteAddress: '192.168.1.244', headers: { host: '192.168.1.1' } }), res)
+    check('allowLan admits a private IPv4 literal Host without a port', state.status === 200, `${state.status} ${state.body}`)
+  }
+  // IPv6 private literals are bracketed (authority syntax) and may carry a port.
+  for (const host of ['[fd12:3456::1]:4074', '[fd12:3456::1]', '[fe80::1]:4074']) {
+    const { res, state } = fakeRes()
+    await lanStatus.handler(fakeReq({ remoteAddress: '192.168.1.244', headers: { host } }), res)
+    check(`allowLan admits the private IPv6 literal Host ${host}`, state.status === 200, `${state.status} ${state.body}`)
+  }
+  // A public IP literal is still not this server, and is not a private origin
+  // either — the Host half refuses it before the origin half could admit it.
+  {
+    const { res, state } = fakeRes()
+    await lanStatus.handler(fakeReq({ remoteAddress: '192.168.1.244', headers: { host: '8.8.8.8:4074' } }), res)
+    check('allowLan refuses a public IP literal Host', state.status === 403, String(state.status))
+    check('...naming the Host header as the cause', JSON.parse(state.body).error.includes('unexpected Host header'), state.body)
+  }
+  // A refused request leaves a log line naming the mode, the peer, the Host and
+  // the fix. The 403 body stays terse (its wording is a contract), so this is
+  // the only place an operator can learn WHY their LAN browser was refused.
+  {
+    const warning = logged.find(line => line.includes('my-laptop.lan:4074'))
+    check('a refusal is logged through ctx.logger', warning !== undefined, JSON.stringify(logged.slice(-3)))
+    check('...with the mode, the remote address and the Host',
+      warning !== undefined && warning.includes('mode=allowLan')
+        && warning.includes('remoteAddress="192.168.1.244"') && warning.includes('Host="my-laptop.lan:4074"'),
+      warning)
+    check('...and the fix an operator has to apply',
+      warning !== undefined && warning.includes('allowLan') && warning.includes('allowedHosts'), warning)
   }
   // A public origin is refused even with a perfect Host, and the refusal says
   // why rather than claiming "loopback-only".

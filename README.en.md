@@ -165,7 +165,7 @@ become inaccessible since the host no longer exists.
 | --- | --- | --- |
 | `enabled` | `true` | Master switch |
 | `announceToAgent` | `false` | Whether to inject a capability description (a system-prompt section) into every agent |
-| `allowLan` | `false` | LAN deployment: the browser HTTP routes accept private-network source addresses (IPv4 RFC1918, IPv6 ULA/link-local) |
+| `allowLan` | auto | LAN deployment: **follows the webserver bind by default** — enabled when it binds `0.0.0.0`, loopback-only otherwise (including no webServer); an explicit `true` / `false` wins |
 | `allowedHosts` | `[]` | Extra `Host` values to admit (with `allowLan`), e.g. when the panel is reached by a LAN hostname |
 | `engine.idleTimeoutMs` | `1800000` | Recycle a connection after it stays idle this long (ms) |
 | `engine.connectTimeoutMs` | `15000` | Per-connect SSH handshake budget (ms) |
@@ -180,16 +180,34 @@ By default only the **loopback interface** may call the browser routes
 (`127.0.0.1` / `::1` / `localhost`). When the webserver binds `0.0.0.0` and the
 browser sits on another LAN machine, requests are refused with
 `forbidden: loopback-only` — that is the anti-DNS-rebinding fence, not a
-malfunction. With `allowLan: true`:
+malfunction.
+
+`allowLan` has three states: an explicit `true` / `false` wins, and when it is
+absent it **follows the webserver bind** (`webserver.host === '0.0.0.0'` counts
+as enabled, because binding every interface is itself a statement that the
+server may be reached from elsewhere; a loopback bind or no webServer keeps the
+loopback fence). A deployment that binds `0.0.0.0` therefore needs no extra
+configuration to open the panel from the LAN. Once enabled:
 
 - the source address may be any **private-network** address (IPv4 `10/8`,
   `172.16/12`, `192.168/16`; IPv6 ULA `fc00::/7` and link-local `fe80::/10`);
   public addresses are still refused;
-- the `Host` header must name one of **this machine's own listening
-  addresses** (each interface address plus the port; loopback spellings always
-  work), and a mismatching Host still gets
-  `forbidden: unexpected Host header …` — the anti-rebinding semantics carry
-  over unchanged;
+- the `Host` header may be any of three things: one of **this machine's own
+  listening addresses** (each interface address plus the port; loopback
+  spellings always work), a configured `allowedHosts` value, or a **private IP
+  literal** (IPv4 with an optional port; IPv6 in brackets, port optional). The
+  third is what makes Docker port mappings, `ssh -L` tunnels and reverse proxies
+  work: the browser sends the address it dialled (the host's `172.19.0.199`),
+  while the container only sees its own interface (`172.21.0.199`), so
+  "must be one of MY addresses" refused every such deployment;
+- a **hostname** is still admitted only when `allowedHosts` lists it: a
+  rebinding attack must send its own domain as `Host`, and that name is in no
+  list — so the anti-rebinding semantics are unchanged. Public IP literals are
+  still refused;
+- a refusal also writes one warn line with the `mode`, the source address, the
+  `Host` and the fix; the response body keeps its historical wording
+  (`forbidden: loopback-only` / `forbidden: unexpected Host header …`), so
+  check the log when debugging;
 - if the panel is reached by a name the machine's interfaces do not know (a
   LAN hostname, a reverse-proxy spelling), add it to `allowedHosts` (case and
   surrounding whitespace insensitive, with or without a port);

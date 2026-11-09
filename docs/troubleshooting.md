@@ -151,7 +151,7 @@ host "别名" (user@host:port): <一句话摘要>
 4. **主机密钥不匹配**：连接被拒，错误信息为「the server presented a different host key than the one recorded on first connect」并列出 `recorded` / `presented` 两个指纹。含义：该主机本次出示的密钥与首次连接时记录的（`dsh-ssh.json` 的 `knownHosts` 段）不一致——可能是主机重装系统或合法轮换了密钥，也可能是中间人。**先与管理员核对新指纹**；确认可信后，在「远程工作区」面板对该主机执行「忘记主机密钥」，再重连（重新 TOFU 记录）。若没有预期的密钥变更，不要继续连接。
 5. **jump host / ProxyCommand 被拒**：插件不支持跳板，`resolve` 会直接报错说明。改用无跳板的主机条目，或换用其它工具连接该主机。
 6. **端口 / 网络**：确认 `host` 与 `port` 可达；本地 `ssh -p <port> user@host` 能连通的话，插件侧再查凭据与配置来源（store 覆盖 `~/.ssh/config`，同别名以 store 为准）。
-7. **面板接口 403 / 请求被拒**：宿主路由只服务本机（回环地址且 `Host` 头为本机监听的 `localhost`/`127.0.0.1`/`[::1]` 拼写）。如果你通过反向代理或自定义域名访问 DSH 界面，这些请求会被拒——属预期行为（防 DNS rebinding），不是故障。
+7. **面板接口 403 / 请求被拒**：宿主路由默认只服务本机（回环地址且 `Host` 头为本机监听的 `localhost`/`127.0.0.1`/`[::1]` 拼写）。`allowLan` 缺省跟随 webserver 绑定：webserver 绑 `0.0.0.0` 时自动放宽到私网来源，并接受本机网卡地址 / `allowedHosts` / 私网 IP 字面量（Docker 端口映射、`ssh -L`、反向代理都属于这一类）；**主机名**仍需加进 `allowedHosts`。所以经反代或自定义域名访问 DSH 界面被拒时：先把该域名加进 `allowedHosts`，再重启；仍被拒就看服务端日志里那条 `ssh-workspace: refused …`（带 mode / 来源地址 / Host / 修复建议）。这仍是防 DNS rebinding 的围栏，不是故障。
 
 ## 已知限制
 

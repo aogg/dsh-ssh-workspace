@@ -465,8 +465,12 @@ shell。接管后，`spec.cwd` 是 `ssh://` 就改开 SSH PTY 通道，返回满
   路由只服务**回环请求**：除 `remoteAddress`
   回环外，还要求 `Host` 头精确为本机监听端口的 `localhost` / `127.0.0.1` /
   `[::1]` 三种拼写之一，否则 403——仅凭回环地址挡不住 DNS rebinding（页面
-  可把自己的域名解析到 127.0.0.1 从而同源访问），Host 校验把这条路堵死；
-  反向代理 / 自定义域名访问会被一并拒绝（预期行为）。
+  可把自己的域名解析到 127.0.0.1 从而同源访问），Host 校验把这条路堵死。
+  `allowLan` 生效时（显式 `true`，或 webserver 绑 `0.0.0.0` 时的缺省，见
+  `lib/access-policy.js`）来源放宽到私网段，`Host` 接受本机网卡地址、
+  `allowedHosts` 与**私网 IP 字面量**（Docker 端口映射 / 反代下浏览器发的是宿主
+  地址）；**主机名**仍只认 `allowedHosts`，rebinding 语义不变。被拒的请求会写一条
+  warn 日志（mode / 来源 / Host / 修复建议），响应措辞保持历史字符串。
 - POST 路由（`hosts/save`、`hosts/delete`、`hosts/forget-key`、
   `hosts/disconnect`、`test`、`mount`、`unmount`、`enable`、转发七条、
   `transfer`）额外要求
