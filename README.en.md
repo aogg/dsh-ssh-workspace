@@ -255,6 +255,7 @@ See [SECURITY.md](./SECURITY.md) for the full security discussion.
 | Shell commands follow the workspace | With an `ssh://` session workspace, the `pwsh` / `bash` tools run on the remote host under POSIX shell semantics — one-shot commands, background jobs, timeouts, and cancellation all work through DSH's process contract; local `workdir` commands are unaffected |
 | glob / grep search the remote | They invoke **ripgrep (`rg`) on the remote host** and return real remote results; when ripgrep isn't installed there, the command fails clearly with an install hint (exit code 127) |
 | Change tracking goes remote | The "Changes" (deliverables) panel uses **remote git** for per-turn snapshots and diffs — files changed by remote shell commands show up too (+N/−N, click through to the diff); when git isn't installed remotely this capability quietly turns itself off and nothing else is affected |
+| Auto-injected `local-exec` skill | The plugin registers a `local-exec` skill into the **model skill catalog** automatically (`userInvocable: false` — hidden from the input-box skill menu): it explains that a command's landing spot is decided by the bash / pwsh `workdir` — with an `ssh://` session workspace, an explicit local workdir (e.g. `/tmp`) runs on this machine without SSH — and covers channel disambiguation (exec / shell / the glob-grep bridge / terminals), the sandbox fences, and port-forward directions. The panel's "Auto-injected skill" section shows the full text read-only |
 
 ### UI integration
 

@@ -23,10 +23,11 @@
 | `lib/forward-persist.js` | 已存映射：**意图**（`enabled`）与**事实**（`live`）分离、启动时自动开启、`closeById` / `closeAlias` 两条断开路径（后者逐条走前者） |
 | `lib/transfer.js` | 文件传输：本机 ↔ 远端的流式 SFTP 拷贝与目录树上传（原子发布） |
 | `lib/store.js` | `$DSH_HOME/dsh-ssh.json` 存储：校验、合并（保留未知字段）、原子写 |
-| `lib/routes.js` | 浏览器半边的 33 条 HTTP 路由（hosts / save / default-path / delete / forget-key / disconnect / test / ls / status / mount / unmount / enable / agent-prompts ×5 / floating ×5 / forward / unforward / forward-save / toggle / delete / remember / probe / settings / transfer / download / upload） |
+| `lib/routes.js` | 浏览器半边的 34 条 HTTP 路由（hosts / save / default-path / delete / forget-key / disconnect / test / ls / status / mount / unmount / enable / agent-prompts ×5 / skill / floating ×5 / forward / unforward / forward-save / toggle / delete / remember / probe / settings / transfer / download / upload） |
 | `lib/access-policy.js` | 浏览器路由的 LAN 开关：`allowLan` 三态（显式 true/false 优先，缺省跟随 `webserver.host === '0.0.0.0'`）。纯函数、无宿主依赖，所以「忘了写开关」这个最常见的部署状态能被测试直接执行，而不是只能靠一台真机撞上 403 |
 | `lib/shell.js` | 远端持久 shell 会话：`cd` / 导出变量 / 后台任务跨调用保留 |
 | `lib/tools.js` | 10 个 `ssh_workspace_*` Agent 工具（schema / 渲染 / 执行） |
+| `lib/local-exec-skill.js` | 自动注入技能 `local-exec`：经宿主 `skills.register` 注册进模型技能目录（`source: 'runtime'`、`userInvocable: false` 不进输入框技能菜单），正文讲清「workdir 决定命令落点」的路由规则、通道辨析、围栏与端口转发；skills 服务缺失只告警跳过，注册结论写入共享 sink 供 `/skill` 路由与面板展示 |
 | `lib/peers.js` | 依赖定位与加载：本包 `node_modules` → `DSH_PEER_ROOT` → 各 profile → 部署自带树 |
 | `lib/diagnostics.js` | 面向用户的诊断环形缓冲（固定 40 条）：连接 / 连接失败 / 断连 / 重连 / 降级 / 上游补丁结论。宿主无 console exporter 且 `debug` 被默认级别丢弃，所以这些信息只能从这里经由 status 工具与面板路由呈现 |
 | `lib/client.js` | 浏览器半边：面板、添加工作区流程、标记装饰、全部样式与中英文案 |
@@ -110,12 +111,12 @@ profile 安装（`pnpm install`）会让第 1 步命中 profile 内的解析链�
 
 `ctx.logger` 仍然用于启动期的一次性信息（例如"注册了 N 条路由"），那些是给人看的、且只在启动时出现一次。
 
-面向模型的能力公告见 `lib/index.js` 的 `SSH_WORKSPACE_GUIDANCE`。
+面向模型的能力公告见 `lib/index.js` 的 `SSH_WORKSPACE_GUIDANCE`；随会话自动注册进模型技能目录的 `local-exec` 技能（workdir 路由判定）见 `lib/local-exec-skill.js`，注册结论经 `/skill` 路由在面板展示。
 
 ## 冒烟测试与 CI
 
 `tests/` 下是一组按依赖分层的冒烟套件；`npm test`（即 `node tests/run.mjs`）依次以子进程运行
-全部套件（也可 `node tests/run.mjs live acceptance` 只跑指定套件）。共 42 个套件，
+全部套件（也可 `node tests/run.mjs live acceptance` 只跑指定套件）。共 44 个套件，
 断言数按套件打印的 `PASS` 行数计（下表数字为裸检出实测；`DSH_CORE_ROOT` /
 `DSH_WS_TEST_ALIAS` 未设置时 6 个套件整体 SKIP——`projection-real`、`lifecycle`、
 `boot`、`tool-schemas`、`live`、`acceptance`；`boot` 本身仍在运行并贡献断言，
@@ -140,6 +141,7 @@ profile 安装（`pnpm install`）会让第 1 步命中 profile 内的解析链�
 | `store-lock-smoke` | 无 | 15 | 主机存储的跨进程写锁：互斥与降级、死锁接管、并发 `mutateHosts` 不丢条目、`save()` 的替换语义 |
 | `transfer-smoke` | 无 | 38 | 单文件传输的流式拷贝、原子替换、失败清理、`ssh_workspace_transfer` 的模式门禁（上传被拒 / 下载放行 / 无策略服务 / 策略解析失败 / **读不懂的模式也拒**）、**上传的范围判定**（会话工作区内放行 / 工作区外拒绝 / `danger-full-access` 放行）与**上传的可达性围栏**（挂载根外拒绝且不落一字节 / 父目录 symlink 逃逸拒绝 / 服务内放行 / `/tmp` 放行 / 工具把 `router.roots` 真正传下去） |
 | `mode-gate-smoke` | 无 | 115 | 远端写入的沙箱模式门禁：`sessionPolicyOf` 的三个解析结果与「解析失败 ≠ 用户选了 read-only」的文案可分性、六条命令 / 终端路径的放行与拒绝、**拒绝时未触达主机**（直接数 `exec` / `acquire` / `openChannel`）、持久 shell 的 `close` 例外、终端开 PTY 与逐次写入两道门禁、控制字节例外、`workspace-write` 收窄到会话工作区（会话内 / 兄弟根 / 跨主机根 / `..` 拼写 / 本地 root 不参与比较）、**主机 `/tmp` 在范围内的同一主机上放行、换主机不跟**、**读不懂的模式在写入与命令两面都拒**、路由层真的读这份判定、公告与实际一致 |
+| `skill-local-exec-smoke` | 无 | 53 | 自动注入技能 `local-exec`：payload 六字段契约（name / description / `source: 'runtime'` / whenToUse 点名本机目标 / 正文覆盖路由规则与写法、通道辨析、围栏、端口转发、易错点 / `invocation` 恰为 `{ modelInvocable: true, userInvocable: false }`）、注册成功落 sink 且 info 留痕、disposer 注销并复位 sink、**skills 服务缺失 / register 抛错只 warn 不炸加载**、无 disposer 返回值与抛错 disposer 的降级、以及 index / routes / client / run.mjs 的接线源码审计 |
 | `shell-smoke` | 无 | 18 | 远端持久会话：`cd` / 变量 / 后台任务跨调用保留、关闭与超时 |
 | `terminal-smoke` | 无 | 23 | 终端接管：`ssh://` cwd 的 PTY 开在远端、围栏拒绝、还原 |
 | `transport-smoke` | 无 | 17 | 传输路由与流式通道（第二条 SFTP 通道、退化路径） |
@@ -149,9 +151,9 @@ profile 安装（`pnpm install`）会让第 1 步命中 profile 内的解析链�
 | `floating-store-smoke` | 无（路由段需 peer 树） | 59 | 浮动远端的存储与路由：段归一化（坏条目只丢自己、`hosts` 不受影响）、自动命名与同父去重、改名/排序/删除、五条路由的 join 状态（mounted / registered / hostMissing / parentMissing）、幂等 save、`deregister` 走与「卸载」同一条 teardown |
 | `floating-menu-smoke` | 无 | 37 | ⋯ 菜单注入：只认官方 aria 模板、未分组桶跳过、**只追加在已有项之后**、marker 防重、注入后视口夹取、二级菜单按配置出条（含状态徽标）、空态与刷新重绘、Esc/外点收起、aria 失配时菜单原样、disposer 摘监听与卡片 |
 | `floating-display-smoke` | 无 | 50 | 浮动显示的两个纯判定（非浮动 = 隐藏配置项；浮动 = 只留目标）+ CSS 契约：不透明 `bg-layer` 背景、`min-height: 100%` 覆盖、头部 46px 与树偏移、3px 强调色带、`translateX(-100%)` 140ms 滑入、`!important` 行隐藏规则、reduced-motion 关闭动画 |
-| `routes-smoke` | 无 | 126 | 33 条路由的请求 / 响应契约、两种卸载模式、归档、停用围栏、`sessionIds` 强制转字符串、断开必须连带拆除转发且走 `closeAlias`、下载失败必须是非 2xx |
+| `routes-smoke` | 无 | 126 | 34 条路由的请求 / 响应契约、两种卸载模式、归档、停用围栏、`sessionIds` 强制转字符串、断开必须连带拆除转发且走 `closeAlias`、下载失败必须是非 2xx |
 | `secrets-smoke` | 无 | 26 | 凭据存储与加密、迁移、`~/.ssh/config` 明文兼容、密钥文件按需创建 |
-| `lifecycle-smoke` | `DSH_CORE_ROOT` | SKIP | 真实 Cordis 下 5 种服务装配顺序的接管 / 路由 / 工具注册（期望 33 路由 / 10 工具） |
+| `lifecycle-smoke` | `DSH_CORE_ROOT` | SKIP | 真实 Cordis 下 5 种服务装配顺序的接管 / 路由 / 工具注册（期望 34 路由 / 10 工具） |
 | `boot-smoke` | `DSH_CORE_ROOT`（远端段另需 `DSH_WS_TEST_ALIAS`） | SKIP | 生产顺序引导、`ctx.fs` 接管与还原、工具端到端、挂载 → 停用 → 读被拒 → 启用往返 |
 | `tool-schemas-smoke` | `DSH_CORE_ROOT` | SKIP | 工具 schema 过真实 `assertSupportedJsonSchema` + render 冒烟（160 项） |
 | `projection-real-smoke` | `DSH_CORE_ROOT` | SKIP | `UPSTREAM-1` 补丁对**真实** `SessionProjectionRegistry` + `WorkingDirectoryService` + 真实 zod，按生产顺序装配：复现 `Invalid input` → 打补丁后 `restore` / `viewCheckpoint` 双双通过 → 报告 `probe: 'broken'` → 卸载后已打开的 ssh:// 会话仍可读。第一节断言的是**缺陷仍然存在**，红 = 删补丁（失败信息自带删除清单） |
@@ -169,7 +171,7 @@ profile 安装（`pnpm install`）会让第 1 步命中 profile 内的解析链�
 跳过（跳过的套件无法失败，正是这样一次跳过让一个调用了未导入函数的 upload 处理器
 绿着发了出去）。只有需要**真实框架**的四个套件（`lifecycle` / `boot` / `tool-schemas` /
 `projection-real`）与需要真实主机的两个（`live` / `acceptance`）仍 SKIP 并给出原因。
-这正是 CI 的形态，30/30 报告成功。
+这正是 CI 的形态，38/38 报告成功（44 套件 − 6 个 SKIP）。
 
 这些套件靠 `tests/support/peer-mode.mjs` 判断手上这棵树能不能证明它们要证明的事。
 它对每个包给出四态，其中两态的差别很关键：

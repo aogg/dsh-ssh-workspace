@@ -453,13 +453,15 @@ shell。接管后，`spec.cwd` 是 `ssh://` 就改开 SSH PTY 通道，返回满
   `priority: -100` 遮蔽原生 `directoryFlow` 双入口）与远端目录对话框；
 - 工作区标记是 **DOM 装饰**：不删改 React 节点，隐藏原生文件夹图标、
   插入自有 `svg[data-sshwsp-mark]`，MutationObserver 自愈重扫；
-- 与宿主通信走 33 条路由（前缀 `/api/dsh-ssh-workspace/`）：
+- 与宿主通信走 34 条路由（前缀 `/api/dsh-ssh-workspace/`）：
   `hosts`、`hosts/save`、`hosts/default-path`、`hosts/delete`、`hosts/forget-key`、
   `hosts/disconnect`、`test`、`ls`、`status`、`mount`、`unmount`、`enable`、
   `forward`、`unforward`、`forward/save`、`forward/toggle`、`forward/delete`、
   `forward/remember`、`forward/probe`、`forward/settings`、`transfer`、
   `download`、`upload`、`agent-prompts`（含 `/global`、`/host`、`/workspace`、
-  `/preview` 四个子路由，见 [agent-prompts.md](./agent-prompts.md)），以及
+  `/preview` 四个子路由，见 [agent-prompts.md](./agent-prompts.md)）、
+  `skill`（自动注入技能 `local-exec` 的只读展示，未注册时返回明确的
+  `registered: false` 状态），以及
   `floating/list`、`floating/save`、`floating/update`、`floating/delete`、
   `floating/reorder`（见 [floating-workspaces.md](./floating-workspaces.md)）。
   路由只服务**回环请求**：除 `remoteAddress`

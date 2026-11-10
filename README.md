@@ -240,6 +240,7 @@ npm ci          # ssh2 是直接依赖，不随 clone 到位
 | shell 命令远端化 | 会话工作区是 `ssh://` 时，`pwsh` / `bash` 工具在远端以 POSIX shell 语义执行——一次性命令、后台任务、超时与中止都按 DSH 的进程契约工作；本地 `workdir` 的命令不受影响 |
 | glob / grep 远端搜索 | 调用**远端主机上的 ripgrep（`rg`）**返回真实远端结果；远端未安装 ripgrep 时得到带安装提示的明确失败（退出码 127） |
 | 变更追踪远端化 | 「变更」（deliverables）面板用**远端 git** 做回合快照与 diff——远端 shell 改的文件也会出现在变更列表（+N/−N、点开看 diff）；远端未装 git 时自动降级关闭，其余功能不受影响 |
+| `local-exec` 技能自动注入 | 插件向**模型技能目录**自动注册 `local-exec` 技能（`userInvocable: false`，不进输入框技能菜单）：讲清「命令落点由 bash / pwsh 的 workdir 决定」——会话工作区是 `ssh://` 时显式传本地 workdir（如 `/tmp`）即在本机执行、不过 SSH，并覆盖通道辨析（exec / shell / glob-grep 桥 / 终端）、沙箱围栏与端口转发方向；面板「自动注入技能」区可只读查看全文 |
 
 ### 界面集成
 
