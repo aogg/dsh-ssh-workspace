@@ -117,6 +117,50 @@ console.log('\n[store semantics]')
 }
 
 // ---------------------------------------------------------------------------
+console.log('\n[store semantics: the aliasTag opt-in]')
+//
+// The sidebar alias tag rides the same opt-in shape as the transport flags:
+// absent = off (older entries, hand-written stores), true = on, and a boolean
+// false never lands on disk — so an entry that never turned the tag on stays
+// byte-identical to an older version's. A non-boolean value must fail
+// validation with its own message instead of guessing a state.
+
+{
+  const home = mkdtempSync(path.join(tmpdir(), 'dsh-host-os-aliastag-'))
+  try {
+    const store = new HostConfigStore(path.join(home, 'store.json'))
+
+    const tagged = store.create({ alias: 'tagged', host: 't.example', user: 'u', auth: { kind: 'agent' }, aliasTag: true })
+    check('create with aliasTag:true stores the opt-in', tagged.aliasTag === true, JSON.stringify(tagged))
+    const untagged = store.create({ alias: 'untagged', host: 'n.example', user: 'u', auth: { kind: 'agent' }, aliasTag: false })
+    check('a false never lands on disk (off = absence of the key)',
+      !Object.hasOwn(untagged, 'aliasTag'), JSON.stringify(Object.keys(untagged)))
+    const bare = store.create({ alias: 'bare', host: 'b.example', user: 'u', auth: { kind: 'agent' } })
+    check('a create without the key stores no key (older-version shape)',
+      !Object.hasOwn(bare, 'aliasTag'), JSON.stringify(Object.keys(bare)))
+
+    store.update('bare', { aliasTag: true })
+    check('an update can turn the tag on', store.find('bare').aliasTag === true, JSON.stringify(store.find('bare')))
+    store.update('bare', { aliasTag: false })
+    check('turning the tag off drops the key again', !Object.hasOwn(store.find('bare'), 'aliasTag'), JSON.stringify(store.find('bare')))
+    store.update('tagged', { description: 'touched' })
+    check('an update without the key keeps the stored opt-in',
+      store.find('tagged').aliasTag === true, JSON.stringify(store.find('tagged')))
+
+    // A hand-written store may carry garbage: the next write must reject it.
+    writeFileSync(store.path, JSON.stringify({
+      hosts: [{ alias: 'broken', host: 'x.example', port: 22, user: 'u', auth: { kind: 'agent' }, aliasTag: 'yes' }],
+    }))
+    let threw
+    try { store.update('broken', { description: 'touched' }) } catch (error) { threw = error.message }
+    check('a non-boolean aliasTag fails validation with its own message',
+      threw !== undefined && threw.includes('aliasTag must be a boolean when present'), String(threw))
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+}
+
+// ---------------------------------------------------------------------------
 console.log('\n[rows: the field reaches the agent-facing surface]')
 
 {
@@ -345,6 +389,24 @@ console.log('\n[hosts/save + hosts: the route carries the field]')
       check('the blank dropped the pinned OS', !Object.hasOwn(store.find('clearme'), 'os'), JSON.stringify(store.find('clearme')))
       check('GET /hosts stops reporting the cleared OS',
         (await hosts()).find(entry => entry.alias === 'clearme')?.os === undefined)
+    }
+    {
+      const reply = await call(routes, ROUTES.hostSave, { method: 'POST', body: form('tagon', { aliasTag: true }) })
+      check('a save with the tag stores the opt-in (payload whitelist carries the field)',
+        reply.body.ok === true && store.find('tagon').aliasTag === true, JSON.stringify(store.find('tagon')))
+      const row = (await hosts()).find(entry => entry.alias === 'tagon')
+      check('GET /hosts reports the tag on (the editor prefills the checkbox)',
+        row?.aliasTag === true, JSON.stringify(row))
+    }
+    {
+      // The editor always posts the boolean, so an absent key is an unchecked
+      // box (or an older client) — both mean OFF, never "keep the old value".
+      const reply = await call(routes, ROUTES.hostSave, { method: 'POST', body: { originalAlias: 'tagon', ...form('tagon') } })
+      check('a save without the key answers ok', reply.body.ok === true, JSON.stringify(reply.body))
+      check('the missing key turned the tag off in the store',
+        !Object.hasOwn(store.find('tagon'), 'aliasTag'), JSON.stringify(store.find('tagon')))
+      check('GET /hosts reports the tag off',
+        (await hosts()).find(entry => entry.alias === 'tagon')?.aliasTag === false)
     }
   } finally {
     rmSync(home, { recursive: true, force: true })

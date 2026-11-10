@@ -87,6 +87,8 @@ function makeNode (tag) {
     attrs: {},
     children: [],
     style: {},
+    textContent: '',
+    firstElementChild: null,
     setAttribute (name, value) { node.attrs[name] = String(value) },
     getAttribute (name) { return node.attrs[name] ?? null },
     appendChild (child) { node.children.push(child) },
@@ -98,6 +100,7 @@ function makeNode (tag) {
 
 const documentStub = {
   createElementNS (_ns, tag) { return makeNode(tag) },
+  createElement (tag) { return makeNode(tag) },
   querySelectorAll () { return [] },
 }
 
@@ -110,12 +113,60 @@ function loadMarks () {
   const factory = new Function('document', 'window', 'fetchJson', 'API', `
     ${shapesSource}
     ${marksSource}
-    return { remoteMarks, hostOsByAlias, knownDisabledPaths, marksCtx,
+    return { remoteMarks, hostOsByAlias, hostAliasTagByAlias, knownDisabledPaths, marksCtx,
       collectRemoteWorkspaces, aliasOfWorkspacePath, syncHostOsMarks,
       refreshHostOsMarks, syncRemoteWorkspaceMarks, createRemoteMarkNode,
-      applyRemoteMark, clearRemoteMark, markHost }
+      applyRemoteMark, clearRemoteMark, markHost, applyAliasTag }
   `)
   return factory(documentStub, windowStub, async () => ({ hosts: [] }), API_STUB)
+}
+
+/** A mini sidebar row: just enough DOM for titleSpanOf + applyAliasTag. */
+function miniRow (titleText) {
+  const spans = []
+  const makeSpan = (text) => {
+    const node = {
+      tagName: 'SPAN', attrs: {}, title: '', textContent: text,
+      parentElement: null, firstElementChild: null, removed: false,
+      afterCalls: 0,
+      setAttribute (name, value) { node.attrs[name] = String(value) },
+      getAttribute (name) { return node.attrs[name] ?? null },
+      removeAttribute (name) { delete node.attrs[name] },
+      appendChild (child) {
+        node.children ??= []
+        node.children.push(child)
+        node.firstElementChild = node.firstElementChild ?? child
+        child.parentElement = node
+      },
+      remove () { node.removed = true; const at = spans.indexOf(node); if (at >= 0) spans.splice(at, 1) },
+      after (sibling) {
+        node.afterCalls += 1
+        sibling.parentElement = node.parentElement
+        if (!spans.includes(sibling)) spans.push(sibling)
+      },
+    }
+    return node
+  }
+  const title = makeSpan(titleText)
+  const column = makeSpan('')
+  column.appendChild(title)
+  spans.push(column, title)
+  const row = {
+    textContent: titleText,
+    attrs: {},
+    setAttribute (name, value) { row.attrs[name] = String(value) },
+    getAttribute (name) { return row.attrs[name] ?? null },
+    hasAttribute (name) { return row.attrs[name] !== undefined },
+    removeAttribute (name) { delete row.attrs[name] },
+    querySelectorAll (selector) {
+      const live = spans.filter(node => !node.removed)
+      if (selector === 'span') return live
+      if (selector === '[data-sshwsp-aliastag]') return live.filter(node => node.attrs['data-sshwsp-aliastag'] !== undefined)
+      return []
+    },
+    querySelector (selector) { return row.querySelectorAll(selector)[0] ?? null },
+  }
+  return { row, title, column, spans }
 }
 
 // ---------------------------------------------------------------------------
@@ -176,6 +227,81 @@ console.log('\n[collectRemoteWorkspaces: the OS rides every identity spelling]')
     marks.remoteMarks.disabledIds.has('w3') && marks.remoteMarks.osIds.get('w3') === 'mac')
   check('a non-remote row collects nothing at all',
     !marks.remoteMarks.ids.has('w4') && !marks.remoteMarks.osIds.has('w4'))
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n[syncHostOsMarks: the alias tag rides the same reply]')
+
+{
+  const marks = loadMarks()
+  marks.syncHostOsMarks([
+    { alias: 'win', os: 'win', aliasTag: true },
+    { alias: 'off', aliasTag: false },
+    { alias: 'absent' },
+    { alias: '', aliasTag: true },
+    { alias: 'junk', aliasTag: 'yes' },
+  ])
+  check('an opted-in alias lands in the tag map', marks.hostAliasTagByAlias.get('win') === true,
+    JSON.stringify([...marks.hostAliasTagByAlias]))
+  check('off, absent, blank-alias and non-boolean stay out (off is the default, a stale reply must not leave tags behind)',
+    !marks.hostAliasTagByAlias.has('off') && !marks.hostAliasTagByAlias.has('absent') &&
+    !marks.hostAliasTagByAlias.has('') && !marks.hostAliasTagByAlias.has('junk'),
+    JSON.stringify([...marks.hostAliasTagByAlias]))
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n[collectRemoteWorkspaces: the alias rides every identity spelling]')
+
+{
+  const marks = loadMarks()
+  marks.syncHostOsMarks([{ alias: 'win', os: 'win', aliasTag: true }])
+  marks.collectRemoteWorkspaces([
+    { workspaceId: 'w1', path: 'ssh://win/D:/code/www', title: 'www' },
+    { id: 'w2', path: '/local/not-remote', title: 'local' },
+  ], [])
+  check('the alias map answers by id', marks.remoteMarks.aliasIds.get('w1') === 'win',
+    JSON.stringify([...marks.remoteMarks.aliasIds]))
+  check('the alias map answers by title and path basename',
+    marks.remoteMarks.aliasTitles.get('www') === 'win', JSON.stringify([...marks.remoteMarks.aliasTitles]))
+  check('a local row collects no alias',
+    !marks.remoteMarks.aliasIds.has('w2') && !marks.remoteMarks.aliasTitles.has('local'))
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n[applyAliasTag: a pill after the title, textContent stays clean]')
+
+{
+  const marks = loadMarks()
+  const { row, title, column, spans } = miniRow('www')
+  marks.applyAliasTag(row, 'win')
+  const tag = row.querySelector('[data-sshwsp-aliastag]')
+  check('the first application inserts one pill right after the title',
+    tag !== null && spans.length === 3 && spans[2] === tag && title.afterCalls === 1,
+    JSON.stringify(spans.map(node => node.attrs['data-sshwsp-aliastag'] ?? node.textContent)))
+  check('the pill carries the alias in the data attribute and the full text in the tooltip',
+    tag !== null && tag.attrs['data-sshwsp-aliastag'] === 'win' && tag.title === 'win',
+    JSON.stringify(tag?.attrs))
+  check('the pill holds NO text node — the mark pass matches rows by textContent',
+    tag !== null && tag.textContent === '' && tag.firstElementChild === null)
+  check('the row is flagged so CSS lets it grow to two lines',
+    row.hasAttribute('data-sshwsp-aliastag-row'), JSON.stringify(row.attrs))
+
+  marks.applyAliasTag(row, 'win')
+  check('re-running the pass stays idempotent (no duplicate pill)',
+    row.querySelectorAll('[data-sshwsp-aliastag]').length === 1 && spans.length === 3)
+
+  marks.applyAliasTag(row, 'mac-dind')
+  const retargeted = row.querySelector('[data-sshwsp-aliastag]')
+  check('a reused row is retargeted in place (alias swapped, still one pill)',
+    retargeted === tag && tag.attrs['data-sshwsp-aliastag'] === 'mac-dind' && tag.title === 'mac-dind' &&
+    row.querySelectorAll('[data-sshwsp-aliastag]').length === 1,
+    JSON.stringify(tag.attrs))
+
+  marks.applyAliasTag(row, undefined)
+  check('clearing removes the pill AND the row flag (zero residue when the option is off)',
+    row.querySelector('[data-sshwsp-aliastag]') === null && tag.removed === true &&
+    !row.hasAttribute('data-sshwsp-aliastag-row') && spans.filter(node => !node.removed).length === 2,
+    JSON.stringify(row.attrs))
 }
 
 // ---------------------------------------------------------------------------
@@ -247,6 +373,10 @@ console.log('\n[wiring: the surfaces feed the os through]')
     source.includes('refreshHostOsMarks()') && source.includes('refreshRemoteWorkspaceMarks()'))
   check('the mounted list picks the glyph from the row path',
     source.includes('hostOsByAlias.get(aliasOfWorkspacePath(wsPath))'))
+  check('sidebar rows resolve the tag through the same identity maps',
+    source.includes('hostAliasTagByAlias.get(tagAlias)'))
+  check('the pill text renders from the attribute, never a text node',
+    source.includes('content: attr(data-sshwsp-aliastag)'))
   check('the flow menu keeps the generic remote icon (a concept, not a host)',
     source.includes("icon: RemoteMarkIcon"))
   for (const [label, marker] of [
