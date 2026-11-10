@@ -43,6 +43,26 @@ A-prod，切到项目 B 时这三行仍在，列表很快被撑满，而它们�
 键盘可达：注入的行是 `role="menuitem"` 的 button，位于官方菜单自己的
 viewport 里，Tab / Enter / Escape 走官方菜单的漫游路径。
 
+### 刷新：缓存 + 单次请求 + 无闪动重绘
+
+打开 ⋯ 菜单不能有可见闪动，三条纪律（`lib/client.js` 浮动段）：
+
+1. **localStorage 缓存**（`dsh-ssh-workspace:floating:v1`，版本化 key）：
+   每次拉取 `/floating/list` 成功后写回；客户端启动时读回 `floatingStore`
+   （`loaded = true`），因此首次展开子菜单直接画上次数据，不再出现
+   「空态 → 真条目」的翻转。缓存**只做显示提示，绝不是操作依据**——挂载、
+   选中、管理永远走 `/floating/*` 实时路由；读写全程 try/catch 静默忽略
+   （隐私模式 / 超配额 / 坏 JSON 最多损失一次首帧提示）。
+2. **签名比较**：`renderFloatingSubmenu` 先算廉价签名（条目 id / 标题 /
+   `alias@host` / 状态徽标 + 浮动中状态），与屏上内容相同就直接 return——
+   DOM 节点保持原身份，重开菜单零变动；数据真的变了才「离屏构建完整行
+   数组 → 一次同步替换」，子菜单永远不会被看到「先清空再重建」。
+3. **一次打开一个请求**：boot / 菜单注入 / 展开子菜单这些展示路径共享同一个
+   in-flight 请求（stale-while-revalidate：先画缓存，后台静默刷新）；加 / 删 /
+   改名 / 排序 / 选中挂载这些**写路径**用 `{ force: true }` 绕开共享，保证
+   读到的是刚发生写入之后的状态。乱序保护：只有最新发起的请求能写 store
+   与缓存，被取代的旧回复直接丢弃。
+
 ### 选中：挂载在需要时才发生
 
 点击一条配置时：
@@ -207,12 +227,15 @@ hero 的工作区按钮。非浮动时，属于浮动配置条目的标题（来
 | `lib/routes.js:1358` – `:1494` | 五个 handler |
 | `lib/routes.js:488` | `teardownWorkspace`：`unmount` 与 `floating/delete` 共用的拆解序列 |
 | `lib/client.js:4383` | 浮动段的标记属性 / 图标 / 状态变量（本段开头有完整的设计说明） |
-| `lib/client.js:4711` / `:4746` | `floatingMembership` / `floatingRowHidden`：隐藏集合的两个纯判定 |
-| `lib/client.js:4773` | `passFloatingDisplay`：行隐藏 + 卡片的一趟对齐 |
-| `lib/client.js:5114` | `installFloatingMenu`：⋯ 菜单注入（捕获 → pending → 追加 + 夹取） |
-| `lib/client.js:4972` / `:5050` | `renderFloatingSubmenu` / `positionFloatingSubmenu` |
-| `lib/client.js:5315` / `:5516` | `FloatingAddDialog` / `FloatingManageDialog` |
-| `lib/client.js:5779` | `installFloatingWorkspaces`：装配 + 自动进入 / 退出点击桥 + disposer |
+| `lib/client.js:4426` / `:4439` / `:4464` | 条目缓存：`FLOATING_CACHE_KEY` / `readFloatingCache` / `writeFloatingCache`（声明后立即 hydrate 进 `floatingStore`） |
+| `lib/client.js:4581` / `:4599` | `floatingRefreshInflight`（展示路径共享的 in-flight 请求）/ `refreshFloatingEntries`（`force` 供写路径绕开共享） |
+| `lib/client.js:4811` / `:4846` | `floatingMembership` / `floatingRowHidden`：隐藏集合的两个纯判定 |
+| `lib/client.js:4873` | `passFloatingDisplay`：行隐藏 + 卡片的一趟对齐 |
+| `lib/client.js:5079` | `floatingSubmenuSignature`：子菜单的廉价渲染签名（不变即不动 DOM） |
+| `lib/client.js:5100` / `:5185` | `renderFloatingSubmenu` / `positionFloatingSubmenu` |
+| `lib/client.js:5249` | `installFloatingMenu`：⋯ 菜单注入（捕获 → pending → 追加 + 夹取） |
+| `lib/client.js:5450` / `:5651` | `FloatingAddDialog` / `FloatingManageDialog` |
+| `lib/client.js:5914` | `installFloatingWorkspaces`：装配 + 自动进入 / 退出点击桥 + disposer |
 | `lib/client.js`（注入样式表） | 「floating remote workspaces」段的全部样式：卡片 / 头部 / 菜单块 / 对话框行；对话框本身在 `apply()` 里注册进 `shell.overlay` 槽 |
 
 ## 降级与已知限制
@@ -222,6 +245,7 @@ hero 的工作区按钮。非浮动时，属于浮动配置条目的标题（来
 | 核心改了工作区「更多」按钮的 aria 模板或 `data-row-key` | 捕获不命中：菜单保持原样（少一项），浮动永不激活；不报错、不坏页 |
 | 核心改了菜单 viewport 的类名 | 退化为往 `menu` 本体追加，仍能出现；位置可能略偏 |
 | 注册表不可达 | 行不隐藏、浮动不激活（身份未知就不猜）；已有卡片保持最后一趟的状态，下一趟重试 |
+| localStorage 不可用（隐私模式 / 被禁用 / 写满配额） | 缓存读写静默跳过（只做显示提示，绝不报错）：首帧可能先画空态、等首次 `/floating/list` 回来再翻成真条目，其余行为完全不变 |
 | 浮动的目标被删除 | 自动退出浮动，配置保留为「未挂载」 |
 | 父工作区被删除 | 条目保留为孤儿（管理面板标「父工作区已删除」），可删除或「清理失效条目」；重新绑定走 `floating/update` 的 `parentId`（后端已支持，界面暂不提供目标选择器） |
 | 主机被删 / 改名 | 条目标「主机缺失」，管理面板可一键清理 |

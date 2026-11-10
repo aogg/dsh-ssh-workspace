@@ -355,6 +355,24 @@ const windowDouble = {
   requestAnimationFrame: (callback) => { callback(); return 1 },
 }
 
+// A localStorage double: real map semantics plus switches that make reads /
+// writes throw, so the entry cache's silent-ignore contract is driven for real
+// (privacy mode, quota) instead of being assumed.
+class LocalStorageDouble {
+  constructor () { this.map = new Map(); this.failReads = false; this.failWrites = false }
+
+  getItem (key) {
+    if (this.failReads) throw new Error('storage denied')
+    return this.map.has(String(key)) ? this.map.get(String(key)) : null
+  }
+
+  setItem (key, value) {
+    if (this.failWrites) throw new Error('quota exceeded')
+    this.map.set(String(key), String(value))
+  }
+}
+windowDouble.localStorage = new LocalStorageDouble()
+
 // ---------------------------------------------------------------------------
 // Slice the floating section out of the real bundle and give it its neighbours.
 // ---------------------------------------------------------------------------
@@ -740,8 +758,127 @@ console.log('\n[add dialog: an unwritable directory blocks the save]')
     !addDialog.includes('hostEditable'))
 }
 
-// The menu disposer was installed separately above; call it last.
-menuDispose()
+// ---------------------------------------------------------------------------
+console.log('\n[entry cache: boot hydration, flicker-free repaint, one request per open]')
+
+{
+  // Retire the original instance first, so the fresh client below is the only
+  // observer: its capture / MutationObserver would race the new injection.
+  menuDispose()
+
+  // Seed the cache the way a successful refresh would have left it, then let a
+  // fresh client instance evaluate: its boot hydration must pick this up and
+  // paint real entries on the very first submenu open.
+  windowDouble.localStorage.setItem(
+    'dsh-ssh-workspace:floating:v1',
+    JSON.stringify({ version: 1, items: JSON.parse(JSON.stringify(floatingPayload.items)) }),
+  )
+  const cached = factory(
+    documentDouble, windowDouble, {}, translate, notifyUser, fetchJson, API_STUB,
+    remoteMarksStub, lastStatusStub, () => true, lastStatusStub, setTimeout, clearTimeout,
+    function KeyboardEvent2 (type, init) { return { type, ...init } },
+    MutationObserverStub, console,
+  )
+  check('boot hydration loaded the cached entries (loaded = true)',
+    cached.floatingStore.items.length === 2 && cached.floatingStore.loaded === true,
+    JSON.stringify({ n: cached.floatingStore.items.length, loaded: cached.floatingStore.loaded }))
+
+  const cachedDispose = cached.installFloatingMenu()
+  const fetchesBefore = fetchCalls.length
+
+  dispatch(rows['w-parent'].actions, 'click', {})
+  const { menu: menu2, viewport: viewport2 } = buildMenu()
+  documentDouble.body.appendChild(menu2)
+  // Synchronous delivery (no microtask in between): the injection happens here
+  // and starts the one list request, which is still in flight below.
+  flushMutations()
+  const wrap2 = viewport2.querySelector('[data-sshwsp-float-item]')
+  check('the fresh client injected its block', wrap2 !== null)
+  check('the injection cost exactly one list request',
+    fetchCalls.length - fetchesBefore === 1, String(fetchCalls.length - fetchesBefore))
+
+  // Open while that request is still in the air — the exact shape of a real
+  // open (inject → expand within one interaction window).
+  dispatch(wrap2.querySelector('[role="menuitem"]'), 'click', {})
+  const sub2 = wrap2.querySelector('[data-sshwsp-float-submenu]')
+  check('the first paint already shows the cached entries (no empty-state flip)',
+    sub2 !== null && sub2.hasAttribute('data-sshwsp-float-open') &&
+      sub2.textContent.includes('alpha · box') && !sub2.textContent.includes('empty'),
+    sub2 === null ? 'no submenu' : sub2.textContent)
+  check('opening shared the in-flight request (one request per open)',
+    fetchCalls.length - fetchesBefore === 1, String(fetchCalls.length - fetchesBefore))
+
+  await flush()
+  check('the revalidate stayed the same single request',
+    fetchCalls.length - fetchesBefore === 1, String(fetchCalls.length - fetchesBefore))
+
+  // (b) unchanged data ⇒ the very same DOM nodes; nothing visibly moves.
+  const rowBefore = sub2.querySelectorAll('button.sshwsp-fitem')[0]
+  await cached.refreshFloatingEntries()
+  const rowAfter = sub2.querySelectorAll('button.sshwsp-fitem')[0]
+  check('an unchanged refresh kept the very same DOM node',
+    rowBefore !== undefined && rowAfter === rowBefore)
+
+  // (c) changed data ⇒ the rows are replaced by the new content, and the
+  // successful fetch writes the new list back into the cache.
+  const renamed = JSON.parse(JSON.stringify(floatingPayload.items))
+  renamed[0].title = 'beta · box'
+  floatingPayload.items = renamed
+  await cached.refreshFloatingEntries({ force: true })
+  const rowReplaced = sub2.querySelectorAll('button.sshwsp-fitem')[0]
+  check('changed data replaced the rows (new node, new content)',
+    rowReplaced !== undefined && rowReplaced !== rowBefore &&
+      sub2.textContent.includes('beta · box') && !sub2.textContent.includes('alpha · box'),
+    sub2.textContent)
+  const writtenBack = JSON.parse(windowDouble.localStorage.getItem('dsh-ssh-workspace:floating:v1'))
+  check('a successful refresh wrote the new list back to the cache',
+    writtenBack?.version === 1 && writtenBack.items[0]?.title === 'beta · box',
+    windowDouble.localStorage.getItem('dsh-ssh-workspace:floating:v1'))
+
+  // (d) storage failures degrade silently: a failing WRITE must not disturb
+  // the painted entries; a failing READ / damaged payload must cost nothing.
+  windowDouble.localStorage.failWrites = true
+  await cached.refreshFloatingEntries({ force: true })
+  check('a failing cache write changes nothing on screen',
+    sub2.textContent.includes('beta · box') &&
+      sub2.querySelectorAll('button.sshwsp-fitem')[0] === rowReplaced)
+  windowDouble.localStorage.failWrites = false
+  windowDouble.localStorage.failReads = true
+  const hardened = factory(
+    documentDouble, windowDouble, {}, translate, notifyUser, fetchJson, API_STUB,
+    remoteMarksStub, lastStatusStub, () => true, lastStatusStub, setTimeout, clearTimeout,
+    function KeyboardEvent3 (type, init) { return { type, ...init } },
+    MutationObserverStub, console,
+  )
+  check('a denied storage hydrates to nothing (silent, no crash)',
+    hardened.floatingStore.items.length === 0 && hardened.floatingStore.loaded === false,
+    JSON.stringify({ n: hardened.floatingStore.items.length, loaded: hardened.floatingStore.loaded }))
+  windowDouble.localStorage.failReads = false
+  windowDouble.localStorage.setItem('dsh-ssh-workspace:floating:v1', '{damaged')
+  const damaged = factory(
+    documentDouble, windowDouble, {}, translate, notifyUser, fetchJson, API_STUB,
+    remoteMarksStub, lastStatusStub, () => true, lastStatusStub, setTimeout, clearTimeout,
+    function KeyboardEvent4 (type, init) { return { type, ...init } },
+    MutationObserverStub, console,
+  )
+  check('a damaged payload hydrates to nothing (silent, no crash)',
+    damaged.floatingStore.items.length === 0 && damaged.floatingStore.loaded === false)
+
+  // (e) concurrency contract: concurrent display refreshes share one request;
+  // a forced refresh bypasses the share (its answer must be post-write).
+  const inflightCount = fetchCalls.length
+  const [sharedA, sharedB] = await Promise.all([
+    cached.refreshFloatingEntries(),
+    cached.refreshFloatingEntries(),
+  ])
+  check('two concurrent display refreshes share one request',
+    fetchCalls.length - inflightCount === 1 && sharedA.length === sharedB.length,
+    String(fetchCalls.length - inflightCount))
+
+  menu2.remove()
+  await flush()
+  cachedDispose()
+}
 
 console.log(`\n=== ${passed} passed, ${failures} failed ===`)
 if (failures > 0) process.exitCode = 1
