@@ -44,6 +44,10 @@
 
 - **主机密钥不匹配的就地恢复**：目录列表 / 测试连接吃到「主机密钥与首次连接记录不一致」拒绝时，错误态不再是一句指回面板「忘记主机密钥」的死路文案——凡是可能吃到这个拒绝的地方（「新建远程工作区」对话框、目录浏览器、默认目录选择器、主机卡片的「测试连接」、主机编辑器的「测试连接」）都就地展开恢复区：先并列渲染**已记录 / 本次出示**两个指纹（含密钥类型与记录时间），点「忘记此主机密钥并重试」后进入**确认步骤**（再次并列双指纹 + 中间人警示：「若你没有预期到这次密钥变更，不要继续」），确认才调 `POST /hosts/forget-key` 清记录并**自动重试刚才失败的列表 / 测试**，重连即以新密钥重新 TOFU——插件从不静默信任变更后的密钥，主机卡片上独立的「忘记主机密钥」次级操作保持不变。支撑这件事的后端改造：拒绝错误挂上 `code: 'hostKeyMismatch'` 与结构化 `mismatch` 字段（`{alias, recorded, presented}`），`/ls`、`/test`、`/probe` 等路由经统一的 `routeErrorPayload` 把字段随错误体透传（`/test` 保持 200 `ok:false`、其余 400），客户端 `fetchJson` 把字段挂到抛出的错误上——**客户端渲染恢复区只读字段、从不解析报错文案**。新增冒烟套件 `probe-route`（52 项）与 `host-key-recovery-ui`（51 项），路由总数 34 → 35。文档见 [docs/ui.md](docs/ui.md) 的「主机密钥不匹配的就地恢复」与 [docs/troubleshooting.md](docs/troubleshooting.md) 第 4 条。
 
+### 修复
+
+- **`ssh_workspace_hosts` 在钉了「操作系统」的主机上整个报错（`value.hosts[N].os is not a declared property`）**：主机 `os` 字段上线时（store 的校验 / normalize / `HostStore.rows()` 输出、编辑器下拉、方言分派）漏改了本工具的输出 schema——`rows()` 恒带 `os` 键（未钉 OS 的行值为 `undefined`，返回前会被剔掉），凡是钉了 win / mac / linux 的主机（如数据文件里已保存的 `os: "linux"` 条目）一进结果，宿主对输出 schema 的 `additionalProperties: false` 校验就以「未声明的属性」拒绝**整个工具调用**，模型侧 `ssh_workspace_hosts` 完全不可用。现在 schema 补上可选的 `os`（`type: 'string'`，`enum` 直接引用 `store.js` 的 `HOST_OS`，缺省即「自动探测」），渲染表新增 `os` 列（`win` = cmd.exe、`mac` / `linux` = POSIX shell、`auto` = 按连接探测），模型据此选对命令方言；既有 dsh-ssh.json 数据无需任何手改。文档见 [docs/tools.md](docs/tools.md) 的 `ssh_workspace_hosts` 一节。
+
 ## [0.2.7] - 2026-10-24
 
 ### 新增
