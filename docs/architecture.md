@@ -418,6 +418,7 @@ shell。接管后，`spec.cwd` 是 `ssh://` 就改开 SSH PTY 通道，返回满
 | 主机变更 | `forget(alias)` 丢弃旧连接，下次操作按新配置重连 | — |
 | 主动断开 | `hosts/disconnect` 先 `savedForwards.closeAlias(alias)`（逐条走 `closeById`，与端口行「断开」同一条路径）再 `forget(alias)`，响应 `closedForwards` 报告拆了几条隧道 | — |
 | 测试连接 | `test` 连一次即 `forget(alias)` 释放（被转发的 `holds` 钉住时不释放） | — |
+| 草稿探测 | `probe`（编辑器「测试连接」与新建模式选目录）经 `withDraftSftp` 开一次性连接：不进池、不落盘（草稿密文与 TOFU 记录都不写，见 `#makeHostKeyVerifier` 的 `pin` 开关），测完 / 列完即关 | — |
 
 **连接与转发的方向性是单向的**，且两个方向都有测试守着：
 
@@ -430,7 +431,10 @@ shell。接管后，`spec.cwd` 是 `ssh://` 就改开 SSH PTY 通道，返回满
 （`ENOENT` / `EACCES` / `EIO` 等），消费方只按码分支，不解析报错文本。
 每次连接握手都做**主机密钥校验**：首次 TOFU 记录 SHA256 指纹到共享存储的
 `knownHosts` 段，之后指纹不一致直接拒绝连接（详见 [hosts.md](./hosts.md)
-的「主机密钥校验」）。
+的「主机密钥校验」）。拒绝本身也是结构化的——`hostKeyMismatchError` 给错误
+挂上 `code: 'hostKeyMismatch'` 与 `mismatch`（双指纹 + 别名），HTTP 层的
+`routeErrorPayload` 把它们随错误体转发给浏览器，界面就地渲染「忘记此主机密钥
+并重试」（见 [ui.md](./ui.md)），全程不解析报错文案。
 
 ## peer 解析
 
@@ -453,9 +457,9 @@ shell。接管后，`spec.cwd` 是 `ssh://` 就改开 SSH PTY 通道，返回满
   `priority: -100` 遮蔽原生 `directoryFlow` 双入口）与远端目录对话框；
 - 工作区标记是 **DOM 装饰**：不删改 React 节点，隐藏原生文件夹图标、
   插入自有 `svg[data-sshwsp-mark]`，MutationObserver 自愈重扫；
-- 与宿主通信走 34 条路由（前缀 `/api/dsh-ssh-workspace/`）：
+- 与宿主通信走 35 条路由（前缀 `/api/dsh-ssh-workspace/`）：
   `hosts`、`hosts/save`、`hosts/default-path`、`hosts/delete`、`hosts/forget-key`、
-  `hosts/disconnect`、`test`、`ls`、`status`、`mount`、`unmount`、`enable`、
+  `hosts/disconnect`、`test`、`probe`、`ls`、`status`、`mount`、`unmount`、`enable`、
   `forward`、`unforward`、`forward/save`、`forward/toggle`、`forward/delete`、
   `forward/remember`、`forward/probe`、`forward/settings`、`transfer`、
   `download`、`upload`、`agent-prompts`（含 `/global`、`/host`、`/workspace`、
@@ -474,7 +478,7 @@ shell。接管后，`spec.cwd` 是 `ssh://` 就改开 SSH PTY 通道，返回满
   地址）；**主机名**仍只认 `allowedHosts`，rebinding 语义不变。被拒的请求会写一条
   warn 日志（mode / 来源 / Host / 修复建议），响应措辞保持历史字符串。
 - POST 路由（`hosts/save`、`hosts/delete`、`hosts/forget-key`、
-  `hosts/disconnect`、`test`、`mount`、`unmount`、`enable`、转发七条、
+  `hosts/disconnect`、`test`、`probe`、`mount`、`unmount`、`enable`、转发七条、
   `transfer`）额外要求
   `content-type: application/json`，否则 415：
   跨站 HTML 表单只能发 `text/plain` / `urlencoded` / `multipart`，且

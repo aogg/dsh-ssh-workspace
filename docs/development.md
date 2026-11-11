@@ -9,7 +9,7 @@
 | 文件 | 职责 |
 | --- | --- |
 | `lib/index.js` | 插件入口：`name` / `inject` 声明、引擎装配、`ctx.inject(['fs'])` 接管时序、工具与路由注册、系统提示公告 |
-| `lib/engine.js` | SSH 引擎：按别名维护持久连接与 SFTP 通道、连接池、空闲回收、`exec` 远端命令 |
+| `lib/engine.js` | SSH 引擎：按别名维护持久连接与 SFTP 通道、连接池、空闲回收、`exec` 远端命令；`withDraftSftp` 草稿探测（一次性连接、不进池、TOFU 只验证不落盘） |
 | `lib/remote-fs.js` | SFTP 文件系统后端：实现 `ctx.fs` 的远端方法（stat / 读写 / 列目录 / 原子写 / 流式读 / 变更监视等），`FsError` 语义与本地后端对齐；变更监视优先 `inotifywait` 推送，无则轮询 |
 | `lib/protocol.js` | `ssh://` 路径：解析、规范化、`file:` URI、前缀判定、basename / dirname |
 | `lib/patch-fs.js` | `ctx.fs` 接管：把远端方法装到部署已有的后端实例上，其余方法原样转发 |
@@ -23,7 +23,7 @@
 | `lib/forward-persist.js` | 已存映射：**意图**（`enabled`）与**事实**（`live`）分离、启动时自动开启、`closeById` / `closeAlias` 两条断开路径（后者逐条走前者） |
 | `lib/transfer.js` | 文件传输：本机 ↔ 远端的流式 SFTP 拷贝与目录树上传（原子发布） |
 | `lib/store.js` | `$DSH_HOME/dsh-ssh.json` 存储：校验、合并（保留未知字段）、原子写 |
-| `lib/routes.js` | 浏览器半边的 34 条 HTTP 路由（hosts / save / default-path / delete / forget-key / disconnect / test / ls / status / mount / unmount / enable / agent-prompts ×5 / skill / floating ×5 / forward / unforward / forward-save / toggle / delete / remember / probe / settings / transfer / download / upload） |
+| `lib/routes.js` | 浏览器半边的 35 条 HTTP 路由（hosts / save / default-path / delete / forget-key / disconnect / test / probe / ls / status / mount / unmount / enable / agent-prompts ×5 / skill / floating ×5 / forward / unforward / forward-save / toggle / delete / remember / forward-probe / settings / transfer / download / upload）；引擎错误的 `routeErrorPayload` 把结构化主机密钥拒绝（`code` + `mismatch` 双指纹）随错误体透传 |
 | `lib/access-policy.js` | 浏览器路由的 LAN 开关：`allowLan` 三态（显式 true/false 优先，缺省跟随 `webserver.host === '0.0.0.0'`）。纯函数、无宿主依赖，所以「忘了写开关」这个最常见的部署状态能被测试直接执行，而不是只能靠一台真机撞上 403 |
 | `lib/shell.js` | 远端持久 shell 会话：`cd` / 导出变量 / 后台任务跨调用保留 |
 | `lib/tools.js` | 10 个 `ssh_workspace_*` Agent 工具（schema / 渲染 / 执行） |
@@ -116,7 +116,7 @@ profile 安装（`pnpm install`）会让第 1 步命中 profile 内的解析链�
 ## 冒烟测试与 CI
 
 `tests/` 下是一组按依赖分层的冒烟套件；`npm test`（即 `node tests/run.mjs`）依次以子进程运行
-全部套件（也可 `node tests/run.mjs live acceptance` 只跑指定套件）。共 44 个套件，
+全部套件（也可 `node tests/run.mjs live acceptance` 只跑指定套件）。共 46 个套件，
 断言数按套件打印的 `PASS` 行数计（下表数字为裸检出实测；`DSH_CORE_ROOT` /
 `DSH_WS_TEST_ALIAS` 未设置时 6 个套件整体 SKIP——`projection-real`、`lifecycle`、
 `boot`、`tool-schemas`、`live`、`acceptance`；`boot` 本身仍在运行并贡献断言，
@@ -151,9 +151,11 @@ profile 安装（`pnpm install`）会让第 1 步命中 profile 内的解析链�
 | `floating-store-smoke` | 无（路由段需 peer 树） | 59 | 浮动远端的存储与路由：段归一化（坏条目只丢自己、`hosts` 不受影响）、自动命名与同父去重、改名/排序/删除、五条路由的 join 状态（mounted / registered / hostMissing / parentMissing）、幂等 save、`deregister` 走与「卸载」同一条 teardown |
 | `floating-menu-smoke` | 无 | 37 | ⋯ 菜单注入：只认官方 aria 模板、未分组桶跳过、**只追加在已有项之后**、marker 防重、注入后视口夹取、二级菜单按配置出条（含状态徽标）、空态与刷新重绘、Esc/外点收起、aria 失配时菜单原样、disposer 摘监听与卡片 |
 | `floating-display-smoke` | 无 | 50 | 浮动显示的两个纯判定（非浮动 = 隐藏配置项；浮动 = 只留目标）+ CSS 契约：不透明 `bg-layer` 背景、`min-height: 100%` 覆盖、头部 46px 与树偏移、3px 强调色带、`translateX(-100%)` 140ms 滑入、`!important` 行隐藏规则、reduced-motion 关闭动画 |
-| `routes-smoke` | 无 | 126 | 34 条路由的请求 / 响应契约、两种卸载模式、归档、停用围栏、`sessionIds` 强制转字符串、断开必须连带拆除转发且走 `closeAlias`、下载失败必须是非 2xx |
+| `routes-smoke` | 无 | 126 | 35 条路由的请求 / 响应契约、两种卸载模式、归档、停用围栏、`sessionIds` 强制转字符串、断开必须连带拆除转发且走 `closeAlias`、下载失败必须是非 2xx |
+| `probe-route-smoke` | 无（需 peer 树） | 52 | 草稿探测通道 `POST /probe`（编辑器「测试连接」与新建模式选目录）：回环 / POST / JSON 三道围栏、草稿形状校验九连拒、**探测不落盘**（草稿密文不进 dsh-ssh.json、不留主机条目、同名已存主机的池化连接不动）、`action: 'ls'` 与 `GET /ls` 同形（登录目录起步 / 路径回显 / 相对路径拒绝）、**留空密文从存储回填**（密码与口令、显式值优先、未知别名留白交引擎拒绝）、**结构化密钥拒绝穿透三条路由**（`/probe` 400、`/test` ok:false、`/ls` 400 都带 `code` + 双指纹）、forget-key 清记录、**验证器 pin / 不 pin 语义**（草稿不写记录、真实连接 TOFU、草稿撞变更密钥被拒且不动记录、草稿呈报已钉密钥放行） |
+| `host-key-recovery-ui-smoke` | 无 | 51 | 客户端半边的就地恢复：`fetchJson` 转发结构化字段（错误体 `code`/`mismatch` 不丢）、`mismatchOf` 是唯一的「是不是密钥拒绝」判据、恢复卡**确认门禁**（先展示双指纹与中间人警示，arming 不得直跳 onConfirm）、三个对话框 + 主机卡片 + 编辑器五处接线（拒绝路由到卡片、普通失败保留重试、确认后 forget 且重试刚才的操作、忘记失败必须浮出）、`fetchRemoteListing` / `forgetHostKeyFor` 两个共享助手、15 个新文案中英成对 |
 | `secrets-smoke` | 无 | 26 | 凭据存储与加密、迁移、`~/.ssh/config` 明文兼容、密钥文件按需创建 |
-| `lifecycle-smoke` | `DSH_CORE_ROOT` | SKIP | 真实 Cordis 下 5 种服务装配顺序的接管 / 路由 / 工具注册（期望 34 路由 / 10 工具） |
+| `lifecycle-smoke` | `DSH_CORE_ROOT` | SKIP | 真实 Cordis 下 5 种服务装配顺序的接管 / 路由 / 工具注册（期望 35 路由 / 10 工具） |
 | `boot-smoke` | `DSH_CORE_ROOT`（远端段另需 `DSH_WS_TEST_ALIAS`） | SKIP | 生产顺序引导、`ctx.fs` 接管与还原、工具端到端、挂载 → 停用 → 读被拒 → 启用往返 |
 | `tool-schemas-smoke` | `DSH_CORE_ROOT` | SKIP | 工具 schema 过真实 `assertSupportedJsonSchema` + render 冒烟（160 项） |
 | `projection-real-smoke` | `DSH_CORE_ROOT` | SKIP | `UPSTREAM-1` 补丁对**真实** `SessionProjectionRegistry` + `WorkingDirectoryService` + 真实 zod，按生产顺序装配：复现 `Invalid input` → 打补丁后 `restore` / `viewCheckpoint` 双双通过 → 报告 `probe: 'broken'` → 卸载后已打开的 ssh:// 会话仍可读。第一节断言的是**缺陷仍然存在**，红 = 删补丁（失败信息自带删除清单） |

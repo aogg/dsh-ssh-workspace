@@ -55,11 +55,12 @@ const EXPECTED_TOOLS = [
 ]
 // Route paths the browser half must expose. Kept in step with ROUTES in
 // lib/routes.js: hosts, host save/default-path/delete/forget-key/disconnect,
-// test, ls, status, mount, unmount, enable, the five agent-prompt routes,
+// test, probe (draft test/ls for the editor's test button and the create-mode
+// picker), ls, status, mount, unmount, enable, the five agent-prompt routes,
 // the skill route, the five floating-workspace routes (list/save/update/
 // delete/reorder), forward, unforward, the six saved-forward routes
 // (save/toggle/delete/remember/probe/settings), transfer, download, upload.
-const EXPECTED_ROUTES = 34
+const EXPECTED_ROUTES = 35
 
 let failures = 0
 function check (label, ok, detail) {

@@ -36,6 +36,14 @@
 - **勾选「转发 ssh-agent」后目录浏览不可用**：引擎此前把 `agentForward` 塞进 ssh2 的连接级 config，而 ssh2 会把连接级该字段当成整条连接的转发许可——连接上没有配置 agent（key / password 认证正是如此）时 `connect()` 直接抛 `You must set a valid agent path to allow agent forwarding`，连接建不起来，SFTP 浏览随之全挂；即便有 agent 也会把转发请求加到包括只读 SFTP 在内的所有通道上。现在连接级不再携带该字段：转发意图记在连接记录上，由统一的 `channelExecOptions` 只在 exec / shell 命令通道上表达（快照 exec、`openChannel` 的监视器 / 终端 / 持久 shell、shell 与 subprocess 路由全部走它），SFTP 路径不受影响；需要转发而连接上没有 agent 时（key / password 认证）会探测本机 ssh-agent 并挂上（配置的密钥 / 密码仍是第一认证方式，认证类型不变），本机没有 agent 时转发空转、连接照常；agent 认证且无 ssh-agent 的明确报错保持不变。
 - **`local-exec` 技能正文不再引用不存在的 `ssh_workspace_reverse_forward`**：正文④节原写反向（本机 → 远端，`ssh -R` 语义）转发「部署提供 `ssh_workspace_reverse_forward` 工具时可用」，但插件注册的模型工具只有 10 个 `ssh_workspace_*`（hosts / mount / unmount / enable / status / exec / transfer / shell / forward / unforward），其中没有 reverse_forward，`lib/forward.js` 也只实现「远端端口 → 本机 localhost」（`ssh -L` 语义）一个方向——那是一条悬空引用，模型照正文点名调用只会得到「工具不存在」。现在④节如实表述：本插件不提供反向（本机 → 远端）转发工具，远端侧要访问本机服务属于网络层问题（如远端经局域网直达本机 IP），不经本插件解决；节标题随之从「端口转发的两个方向」改为「端口转发的方向」。仅技能正文文字修正，运行行为无变化。
 
+## [未发布]
+
+### 新增
+
+- **主机编辑器「测试连接」（新建与编辑都有）与新建时即可选默认目录（草稿探测通道）**：新增 `POST /api/dsh-ssh-workspace/probe` 路由，请求体携带**表单当前值**（`draft`），服务端经引擎的 `withDraftSftp` 为它开一条**一次性 SSH 连接**，测完 / 列完即关。三条刻意语义：① 不碰连接池——草稿可能与某台已保存主机同名但凭据不同，走池子会复用或挤掉用户正在用的连接；② TOFU **只验证不记录**——别名已有主机密钥记录时照样对照（已知变更过的密钥在测试 / 浏览流程同样被拦下、走就地恢复），但连接成功也不写入新记录，避免为改了名或从没保存的主机在共享的 `dsh-ssh.json` 里攒孤儿指纹（保存后的首次真实连接本来就会 TOFU）；③ 草稿密文只活在这一次连接的内存里，绝不落盘——编辑已存主机时留空的密码 / 口令由服务端从存储回填给这条草稿连接（表单不回显密文，「编辑 → 测试」不重输密码才可能通过），显式填写的新值优先。`action: 'test'` 只测连通（成功 toast 附往返毫秒数，失败按连接错误分类给出可操作提示）；`action: 'ls'` 与 `GET /ls` 同形应答（`path` 回显 / `entries` / `writable`），编辑器的「选择…」默认目录按钮因此不再要求「先保存主机」——表单填好连接信息即可浏览，浏览即实连，选完写回输入框、保存时规范化不变。必填字段（别名 / 主机 / 用户名 / 认证字段）没填好时「测试连接」与「选择…」都禁用并以悬停提示说明缺什么。文档见 [docs/ui.md](docs/ui.md) 的「草稿探测通道」与 [docs/hosts.md](docs/hosts.md)。
+
+- **主机密钥不匹配的就地恢复**：目录列表 / 测试连接吃到「主机密钥与首次连接记录不一致」拒绝时，错误态不再是一句指回面板「忘记主机密钥」的死路文案——凡是可能吃到这个拒绝的地方（「新建远程工作区」对话框、目录浏览器、默认目录选择器、主机卡片的「测试连接」、主机编辑器的「测试连接」）都就地展开恢复区：先并列渲染**已记录 / 本次出示**两个指纹（含密钥类型与记录时间），点「忘记此主机密钥并重试」后进入**确认步骤**（再次并列双指纹 + 中间人警示：「若你没有预期到这次密钥变更，不要继续」），确认才调 `POST /hosts/forget-key` 清记录并**自动重试刚才失败的列表 / 测试**，重连即以新密钥重新 TOFU——插件从不静默信任变更后的密钥，主机卡片上独立的「忘记主机密钥」次级操作保持不变。支撑这件事的后端改造：拒绝错误挂上 `code: 'hostKeyMismatch'` 与结构化 `mismatch` 字段（`{alias, recorded, presented}`），`/ls`、`/test`、`/probe` 等路由经统一的 `routeErrorPayload` 把字段随错误体透传（`/test` 保持 200 `ok:false`、其余 400），客户端 `fetchJson` 把字段挂到抛出的错误上——**客户端渲染恢复区只读字段、从不解析报错文案**。新增冒烟套件 `probe-route`（52 项）与 `host-key-recovery-ui`（51 项），路由总数 34 → 35。文档见 [docs/ui.md](docs/ui.md) 的「主机密钥不匹配的就地恢复」与 [docs/troubleshooting.md](docs/troubleshooting.md) 第 4 条。
+
 ## [0.2.7] - 2026-10-24
 
 ### 新增

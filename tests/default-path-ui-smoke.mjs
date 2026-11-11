@@ -93,17 +93,42 @@ console.log('\n[HostEditor: the pick button]')
 {
   const editor = sliceOf('HostEditor')
 
-  check('picking is offered only for saved store hosts (GET /ls needs an alias)',
-    editor.includes("const canPick = editing && host.source === 'store'"))
-  check('the button is disabled with its hint when picking is unavailable',
-    editor.includes('disabled: !canPick,') &&
-    editor.includes("title: canPick ? undefined : t('editor.defaultPathPickHint')"))
+  // Picking dials the draft-probe channel (POST /probe), so it no longer
+  // needs a saved host — it needs the same thing the test button needs: a
+  // complete, connectable form. The old gate (editing && source === 'store')
+  // is what made new hosts unable to pick a default directory.
+  check('picking is gated on the connectable draft, not on a saved host',
+    editor.includes('const canProbe = draft !== null') &&
+    editor.includes('disabled: !canProbe,') &&
+    !editor.includes("const canPick = editing && host.source === 'store'"),
+    'the pick button must key on the draft, like the test button')
+  check('the picker receives the memoized draft (a fresh object per render would re-run its initial-listing effect)',
+    editor.includes('const draft = React.useMemo(draftPayload,') &&
+    // The leading comment block may grow; what must stay is the wiring: the
+    // picker's FIRST prop after it is the memoized `draft`.
+    /pickingPath && jsx\(DefaultPathPicker, \{(?:\s*\/\/[^\n]*)*\s*draft,/u.test(editor))
+  check('the disabled button explains what is missing',
+    editor.includes("title: canProbe ? undefined : t('editor.pickNeedsTarget')"))
   check('clicking opens the second-layer picker',
     editor.includes('onClick: () => setPickingPath(true),'))
   check('the picker starts from the field\'s content when there is one',
     editor.includes("initialPath: defaultPath.trim() !== '' ? defaultPath.trim() : undefined,"))
   check('OK writes the pick into the field and closes the picker',
     editor.includes('onPick: (picked) => { setDefaultPath(picked); setPickingPath(false) },'))
+
+  // The editor's own probe (test button) shares the draft channel.
+  check('the test button probes through POST /probe with the draft',
+    editor.includes('body: JSON.stringify({ action: \'test\', draft }),'))
+  check('the probe is offered only when the draft is complete',
+    editor.includes('disabled: !canProbe || testing,'))
+  check('a probe failure with structured fingerprints opens the mismatch card',
+    editor.includes('setTestMismatch(mismatchOf(result))') && editor.includes('setTestMismatch(mismatchOf(err))'))
+  check('the confirmed recovery forgets the key and re-runs the probe',
+    editor.includes('body: JSON.stringify({ alias: testMismatch?.alias ?? alias.trim() }),') &&
+    editor.includes('await runTest()'))
+  check('a successful probe toasts the duration and stays inline',
+    editor.includes("onToast?.({ kind: 'ok', text: t('editor.testOk', { ms: result.durationMs }) })") &&
+    editor.includes("t('editor.testOk', { ms: testResult.durationMs })"))
 }
 
 // ---------------------------------------------------------------------------
@@ -124,7 +149,18 @@ console.log('\n[DefaultPathPicker: the second layer]')
   check('an out-of-order answer is discarded',
     picker.includes('if (seq !== loadSeq.current) return'))
   check('a failed stale answer cannot clobber the live error state',
-    picker.includes('if (seq === loadSeq.current) setLoadError(err.message)'))
+    /if \(seq !== loadSeq\.current\) return\n\s+setLoadError\(err\.message\)/.test(picker))
+  check('a host-key refusal is kept structured beside the message',
+    picker.includes('setLoadMismatch(mismatchOf(err))'))
+  check('the mismatch renders the recovery card instead of dead-end text',
+    picker.includes('!loading && loadMismatch !== null && jsx(HostKeyMismatchCard, {'))
+  check('the confirmed recovery forgets the key and re-lists the attempted path',
+    picker.includes('await forgetHostKeyFor(loadMismatch?.alias ?? draft?.alias ?? \'\')') &&
+    picker.includes('await loadDir(path)'))
+  check('an ordinary failure keeps its plain retry',
+    picker.includes("onClick: () => loadDir(path), children: t('remote.retry') }"))
+  check('the listing goes through the shared channel helper (draft vs saved)',
+    picker.includes('await fetchRemoteListing(target, { draft })'))
 
   check('files are filtered out (a default path is a browsing start, not a file)',
     picker.includes(".filter((entry) => entry.type === 'directory')"))
