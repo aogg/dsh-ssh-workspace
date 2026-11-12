@@ -4,6 +4,10 @@ node_modules/
 # 打包产物
 *.tgz
 
+# prepack 暂存的 niubash 载荷（33MB 级归档 + 生成的 manifest.json）：
+# 构建产物不入库，打包时由 scripts/stage-niubash.mjs 现场生成
+runtime/
+
 # 仅本地使用的开发 / 测试脚本，不入库
 plugin-boot-test.mjs
 test-live.mjs

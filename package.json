@@ -19,6 +19,8 @@
     "test": "node tests/run.mjs",
     "lint": "node scripts/lint.mjs",
     "check:docs": "node scripts/check-doc-links.mjs",
+    "stage:niubash": "node scripts/stage-niubash.mjs",
+    "prepack": "node scripts/stage-niubash.mjs",
     "check": "npm run lint && npm run check:docs && npm test && npm pack --dry-run"
   },
   "exports": {
@@ -73,6 +75,7 @@
   },
   "files": [
     "lib/",
+    "runtime/",
     "cordis.patch.yml",
     "README.md",
     "SECURITY.md"
