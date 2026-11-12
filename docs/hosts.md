@@ -38,7 +38,7 @@
 | `aliasTag` | 可选布尔。开启后，侧栏中挂载自该主机的**远端工作区行**在名称下方显示一枚小标签，内容为主机别名（小号字体、超宽省略、悬停显示完整别名，行自然长高容纳第二行），用于多台主机的工作区挤在同一侧栏时分清归属；表现与实现要点见 [ui.md](./ui.md) 的「主机别名标签」。缺省 = 关闭（不落盘 `false`），编辑器以复选框呈现，勾掉即删除该字段；编辑器保存后立即生效 |
 | `defaultPath` | 可选字符串。面板「新建远程工作区」在该主机上浏览目录的**初始位置**（编辑器里的「新增工作区默认目录」），缺省 / 留空则打开 SSH 登录目录，字段不落盘。可在面板里浏览选定：新建工作区时勾选「设为本主机默认目录」，或在主机编辑器里用「选择…」按钮。保存时规范化：`\` 折算为 `/`、盘符路径补前导 `/`（`D:/code` → `/D:/code`）、折叠连续 `/`、除根 `/` 与裸盘符根（规范化为 `/D:/`）外去掉尾部 `/`；规范化后不是绝对路径的值会被拒绝（400）。示例：`/home/user` 或 `/D:/code/www` |
 | `proxyJump` | 非空时解析明确拒绝（见下） |
-| `bashProvisioned` | 可选对象，**由 `ssh_workspace_bash action=provision` 写入**，编辑器不碰：`{ path, root, version, sha256, provisionedAt }` 记录部署到该主机的钉版 bash 载荷（可执行文件路径、部署树根、版本、归档 sha256、时间）。它是 bash 解析的第二优先级，让部署在重启后仍然生效；形状损坏的记录按「未部署」降级（引擎回落到探测 / cmd），面板删除主机时随之消失 |
+| `bashProvisioned` | 可选对象，**由初始化流程写入**（面板的「初始化 Niubash」弹窗或 `ssh_workspace_bash action=provision`，经 `mutateHosts`），编辑器不碰：`{ path, root, version, sha256, provisionedAt, releaseTag?, placement? }` 记录部署到该主机的钉版 bash 载荷（可执行文件路径、部署树根、版本、归档 sha256、时间；`releaseTag` 是 niubash 的 GitHub release tag，`placement` 是放置方式 `project` / `user` / `custom` / `legacy`——老版本写入的记录没有这两个字段，**缺省不影响记录的可信度**）。它是 bash 解析的第二优先级，让部署在重启后仍然生效；形状损坏的记录按「未部署」降级（引擎回落到探测 / cmd），面板删除主机时随之消失 |
 | `createdAt` / `updatedAt` | 时间戳 |
 
 `agentForward` / `compress` / `aliasTag` / `os` / `bashPath` 都是**可选字段**：
@@ -125,7 +125,48 @@ agent 认证自带的 `agentPath`）：key / password 认证的主机勾选后�
 [ui.md](./ui.md)）与「忘记主机密钥」（见上节），只清主机密钥记录，
 不动主机条目。主机编辑器（新建与编辑共用）自带「测试连接」与「选择…」
 默认目录按钮，二者都按**表单当前值**经草稿探测通道实连——新建未保存的
-主机也能先测通、先选目录，再保存。
+主机也能先测通、先选目录，再保存。`os === 'win'` 的主机卡片还有
+「初始化 Niubash」按钮（见下节）。
+
+## Niubash 三级加载路径与初始化
+
+Windows 类型主机上的 Niubash（插件自备的 POSIX Bash 运行时）有**三级放置
+路径**，面板「初始化 Niubash」弹窗按此三选一：
+
+1. `<远端项目目录>\.dsh\runtimes\plugins\dsh-ssh-workspace\niubash\` ——
+   放进某个**已挂载的项目工作区**（该主机没有已挂载工作区时不可选）；
+2. `<远端用户目录>\.dsh\runtimes\plugins\dsh-ssh-workspace\niubash\` ——
+   放进**远端用户目录**（`%USERPROFILE%`），**默认推荐**；
+3. 用户选择的目录 —— 弹窗自定义输入的绝对路径（Windows 盘符拼写）。
+
+放置根就是载荷树根（回执 `.provisioned.json` 与 `manifest.json` 副本都在
+树内）。**解析已有 Niubash 的顺序**：
+
+- 主机条目记录的路径**优先**（`bashProvisioned` 记录，whatever 放置方式——
+  记录的路径总是被信任）；
+- 未记录时按 1 → 2 → 3 的默认位置探测：项目根逐个 → 用户目录 → 旧部署根
+  `%USERPROFILE%\.dsh-ssh-workspace\bash\<版本>`（第 3 级在探测里取的是旧
+  版本插件的部署根；**自定义目录只可能通过记录找到**——用户选的目录除记录
+  外无处可记）。探测要求 `manifest.json` 与 bash.exe **都在**，且
+  `bash --version` 实测通过才算数；
+- **旧部署根兼容**：老版本部署在 `~/.dsh-ssh-workspace/bash/<版本>` 的既有
+  条目继续可用（记录路径仍被信任）；新初始化一律走新路径约定。
+
+初始化走两条既有风格的路由（不做轮询，状态以打开弹窗时的一次查询 +
+初始化完成后的一次结果为准）：
+
+- `GET /api/dsh-ssh-workspace/niubash/status?alias=X` —— 弹窗打开时的一次
+  查询：已有记录直接回答（不发探测）；无记录则按三级默认位置探测一次
+  （存在 + 实测），顺带返回本进程信任的载荷 pin（包内暂存 manifest 派生或
+  内置 fallback）与可用的项目放置候选；
+- `POST /api/dsh-ssh-workspace/niubash/init` —— 发起部署：`{ alias,
+  placement: 'project'|'user'|'custom', projectPath?, customRoot?, force? }`，
+  复用 `provisionWinBash` 部署器（目标根由放置路径决定）；浏览器取消 fetch
+  会 abort 整个部署（同一 AbortSignal 一路传进引擎）。
+
+初始化成功的记录（路径 / 版本 / 时间 / 来源）写入 `bashProvisioned`，同时
+作为「Niubash 已初始化」事实进入系统提示词注入的门控判定（见
+[features.md](./features.md) 的「Niubash 状态门控注入」）。
 
 ## 不支持的连接方式
 

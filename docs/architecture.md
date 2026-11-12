@@ -406,6 +406,28 @@ shell。接管后，`spec.cwd` 是 `ssh://` 就改开 SSH PTY 通道，返回满
 目录目标加 `-r`（与本地递归 watcher 对齐），文件目标不加（`inotifywait` 对文件
 加 `-r` 会被拒绝），因此先 stat 判断目标是文件还是目录。
 
+## 提示词注入与 Niubash 门控
+
+`lib/guidance.js` 是注入文本的**单一来源**（index.js 的 system-prompt 公告、
+`/injected` 路由、面板展示页读同一份，不复制）：
+
+- **基础公告**（`SSH_WORKSPACE_GUIDANCE`）：工具能力与围栏说明，静态文本；
+- **Niubash 使用要点段**（`niubashGuidanceSection`）：目录地址 / 版本 + ops 风格
+  的 win32 Bash 语义要点；
+- **门控**（`sshGuidanceForCwd`）：公告以**动态 section** 注册（`text` 是函数，
+  宿主每个模型步求值一次），入参是会话 cwd——`parseRemotePath` 解析出主机别名后
+  按两个**同步事实**判定：①主机条目的 `bashProvisioned` 记录（持久权威），
+  ②引擎 `niubashPresence` 内存缓存（初始化完成、三级放置探测命中时由
+  `noteNiubashPresence` 写入）。两者都无 → 返回基础公告**逐字节不变**——
+  未初始化的主机一个字节都不加。门控点绝不发网络探测（求值频率不允许）；
+  探测发生在别处（弹窗状态查询、bash 解析 rung），结果落缓存即可。
+
+pin 的来源链：打包期 `scripts/stage-niubash.mjs`（npm `prepack`）拉最新 niubash
+release → 校验 → 暂存 `runtime/niubash/` + `manifest.json` → 运行时
+`resolvePayloadPin()` **优先读包内 manifest** 派生 pin → manifest 缺失（裸仓库）
+回退内置 v1.5.0 常量。包内暂存归档 digest 与 manifest 一致时，部署直接用它，
+**完全离线**。
+
 ## 引擎与连接模型
 
 `lib/engine.js`：每个别名一条 ssh2 长连接 + 一个 SFTP 通道（常开）——文件
@@ -462,7 +484,7 @@ shell。接管后，`spec.cwd` 是 `ssh://` 就改开 SSH PTY 通道，返回满
   `priority: -100` 遮蔽原生 `directoryFlow` 双入口）与远端目录对话框；
 - 工作区标记是 **DOM 装饰**：不删改 React 节点，隐藏原生文件夹图标、
   插入自有 `svg[data-sshwsp-mark]`，MutationObserver 自愈重扫；
-- 与宿主通信走 35 条路由（前缀 `/api/dsh-ssh-workspace/`）：
+- 与宿主通信走 38 条路由（前缀 `/api/dsh-ssh-workspace/`）：
   `hosts`、`hosts/save`、`hosts/default-path`、`hosts/delete`、`hosts/forget-key`、
   `hosts/disconnect`、`test`、`probe`、`ls`、`status`、`mount`、`unmount`、`enable`、
   `forward`、`unforward`、`forward/save`、`forward/toggle`、`forward/delete`、
@@ -470,7 +492,10 @@ shell。接管后，`spec.cwd` 是 `ssh://` 就改开 SSH PTY 通道，返回满
   `download`、`upload`、`agent-prompts`（含 `/global`、`/host`、`/workspace`、
   `/preview` 四个子路由，见 [agent-prompts.md](./agent-prompts.md)）、
   `skill`（自动注入技能 `local-exec` 的只读展示，未注册时返回明确的
-  `registered: false` 状态），以及
+  `registered: false` 状态）、
+  `niubash/status`（初始化弹窗的一次状态查询：记录直答或三级放置探测一次）、
+  `niubash/init`（发起 Niubash 部署，放置路径决定目标根，浏览器 abort 即中止）、
+  `injected`（自动注入内容全文 + 各 win 主机 Niubash 命中状态，供展示页），以及
   `floating/list`、`floating/save`、`floating/update`、`floating/delete`、
   `floating/reorder`（见 [floating-workspaces.md](./floating-workspaces.md)）。
   路由只服务**回环请求**：除 `remoteAddress`

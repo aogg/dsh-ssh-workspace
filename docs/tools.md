@@ -41,25 +41,43 @@ shell 的主机（钉了 `mac` / `linux`，或探测出 POSIX 登录 shell）不
 | `force` | 否 | 仅 `provision`：已有的部署即使回执匹配也重建 |
 
 **探测（`detect`）**：解析顺序为 ①主机条目 `bashPath`（面板手填，最高优先）→
-②已部署的载荷（`bashProvisioned`）→ ③自动探测（固定候选路径：Git for Windows
-两种布局、用户级 Git、scoop shim、chocolatey、MSYS2 两处，外加 `where bash` 扫
-PATH，**排除 WSL 的 `System32\bash.exe` 与 Store 别名**）。每个候选都要**实际
-执行** `bash --version` 验证（exit 0 且输出含 bash），文件存在不算数。返回
+②已部署的载荷（`bashProvisioned`）→ ③自动探测（先扫 **Niubash 三级默认放置**
+——该主机的项目工作区根逐个、`%USERPROFILE%\.dsh\runtimes\plugins\dsh-ssh-workspace\niubash`、
+旧部署根 `%USERPROFILE%\.dsh-ssh-workspace\bash\<版本>`，要求 `manifest.json` 与
+bash.exe 都在；再扫固定候选路径：Git for Windows 两种布局、用户级 Git、scoop
+shim、chocolatey、MSYS2 两处，外加 `where bash` 扫 PATH，**排除 WSL 的
+`System32\bash.exe` 与 Store 别名**）。每个候选都要**实际执行** `bash --version`
+验证（exit 0 且输出含 bash），文件存在不算数。返回
 `bash: { path, source: pinned|provisioned|detected, version }` 与
 `dialect`（`posix` / `cmd`）；一个都没有时 `dialect` 为 `cmd` 并提示可
 `provision`。
 
-**部署（`provision`）**：DSH 宿主侧下载钉版归档（或用 `payloadPath` 提供本机
-副本）→ node:crypto 校验 sha256 与字节数 → **本机**解包（node 内建 zlib + tar
-解析，支持普通文件 / 目录 / 硬链接三类成员；绝对路径、`..`、盘符、ADS 等危险
-成员名直接拒绝）→ 经插件现有 SFTP 通道把解包后的目录树整棵上传到远端
-`<HOME>\.dsh-ssh-workspace\bash\<版本>\`（先传 `.stage-…` 兄弟目录再 rename
-发布，中断不会留半个版本）→ 远端执行 `<bash> --version` 做完整性确认 → 回执
-`.provisioned.json` 写在树内（记录 pin 的 url / sha256 / 时间 / 主机别名）→
-版本与路径记入主机条目（`bashProvisioned`）。**红线：远端侧全程只接触 SFTP
-写入与 bash 自身**，不用远端 tar.exe / PowerShell Expand-Archive /
-bitsadmin / curl。部署成功后该主机立刻按 POSIX 分派，且载荷自带的 rg / git
-随之进入 PATH（远端搜索与变更追踪也随可用）。
+**部署（`provision`）**：DSH 宿主侧取得钉版归档——来源顺序为 `payloadPath`
+本机副本 → **包内暂存归档**（打包期 `prepack` 从 GitHub 最新 release 拉取并
+暂存进 `runtime/niubash/`，digest 与包内 `manifest.json` 一致时直接使用，
+**完全离线**）→ 从钉版 URL 下载 → node:crypto 校验 sha256 与字节数 →
+**本机**解包（node 内建 zlib + tar 解析，支持普通文件 / 目录 / 硬链接三类
+成员；绝对路径、`..`、盘符、ADS 等危险成员名直接拒绝）→ 经插件现有 SFTP
+通道把解包后的目录树整棵上传到远端部署根（先传 `.stage-…` 兄弟目录再
+rename 发布，中断不会留半个版本）→ 远端执行 `<bash> --version` 做完整性
+确认 → 回执 `.provisioned.json` 与 `manifest.json` 副本写在树内 → 版本与
+路径记入主机条目（`bashProvisioned`）。**红线：远端侧全程只接触 SFTP 写入
+与 bash 自身**，不用远端 tar.exe / PowerShell Expand-Archive / bitsadmin /
+curl。部署成功后该主机立刻按 POSIX 分派，且载荷自带的 rg / git 随之进入
+PATH（远端搜索与变更追踪也随可用）。
+
+这个工具部署到**旧部署根** `<HOME>\.dsh-ssh-workspace\bash\<版本>`（历史
+形状不变）；面板「初始化 Niubash」弹窗走的是 **Niubash 三级放置路径**
+（项目工作区 / 用户目录 / 自定义，见 [hosts.md](./hosts.md)），二者共用
+同一部署器与记录字段。
+
+pin 的来源：打包期脚本（`scripts/stage-niubash.mjs`，npm `prepack`）拉取
+unixwin/niubash 的**最新 release** win-x64 便携包，校验后暂存进
+`runtime/niubash/` 并生成 `manifest.json`（url / releaseTag / version /
+assetFile / sha256 / bytes / stagedAt + executableRelativePath /
+executableSha256）；运行时**优先读包内 manifest** 派生 pin，manifest 缺失
+（开发者裸仓库）才回退内置 v1.5.0 常量 + 在线下载。`npm pack --dry-run`
+（含 `npm run check`）自带离线 guard：绝不联网，只校验已暂存内容。
 
 返回 `ok`、`action`、`alias`、`dialect`、`bash?`、
 `provisioned?`（`reused` / `path` / `root` / `version` / `files` / `bytes` /

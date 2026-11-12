@@ -23,12 +23,14 @@
 | `lib/forward-persist.js` | 已存映射：**意图**（`enabled`）与**事实**（`live`）分离、启动时自动开启、`closeById` / `closeAlias` 两条断开路径（后者逐条走前者） |
 | `lib/transfer.js` | 文件传输：本机 ↔ 远端的流式 SFTP 拷贝与目录树上传（原子发布） |
 | `lib/store.js` | `$DSH_HOME/dsh-ssh.json` 存储：校验、合并（保留未知字段）、原子写 |
-| `lib/routes.js` | 浏览器半边的 35 条 HTTP 路由（hosts / save / default-path / delete / forget-key / disconnect / test / probe / ls / status / mount / unmount / enable / agent-prompts ×5 / skill / floating ×5 / forward / unforward / forward-save / toggle / delete / remember / forward-probe / settings / transfer / download / upload）；引擎错误的 `routeErrorPayload` 把结构化主机密钥拒绝（`code` + `mismatch` 双指纹）随错误体透传 |
+| `lib/routes.js` | 浏览器半边的 38 条 HTTP 路由（hosts / save / default-path / delete / forget-key / disconnect / test / probe / ls / status / mount / unmount / enable / agent-prompts ×5 / skill / niubash status + niubash init / injected / floating ×5 / forward / unforward / forward-save / toggle / delete / remember / forward-probe / settings / transfer / download / upload）；引擎错误的 `routeErrorPayload` 把结构化主机密钥拒绝（`code` + `mismatch` 双指纹）随错误体透传 |
 | `lib/access-policy.js` | 浏览器路由的 LAN 开关：`allowLan` 三态（显式 true/false 优先，缺省跟随 `webserver.host === '0.0.0.0'`）。纯函数、无宿主依赖，所以「忘了写开关」这个最常见的部署状态能被测试直接执行，而不是只能靠一台真机撞上 403 |
 | `lib/shell.js` | 远端持久 shell 会话：`cd` / 导出变量 / 后台任务跨调用保留 |
 | `lib/tools.js` | 11 个 `ssh_workspace_*` Agent 工具（schema / 渲染 / 执行） |
-| `lib/win-bash.js` | Windows 主机 bash 解析：候选清单（Git / scoop / chocolatey / MSYS2，env 占位符远端展开）、`where bash` 探测脚本与解析、WSL 启动器排除、`--version` 实测、`bashCwdOf` 盘符拼写、provisioned 载荷的 PATH 前缀 |
-| `lib/bash-payload.js` | 钉版 bash 载荷（niubash v1.5.0 pin：url / sha256 / bytes / 解包方式）与部署器：下载或本机副本 → 摘要校验 → node zlib+tar 本机解包 → SFTP 整树上传（stage + rename 发布）→ 远端 `--version` 完整性确认 → 回执 `.provisioned.json` → 记入主机条目 |
+| `lib/win-bash.js` | Windows 主机 bash 解析：候选清单（Git / scoop / chocolatey / MSYS2，env 占位符远端展开）、Niubash 三级默认放置探测（项目根 / 用户目录 / 旧部署根，`manifest.json` + bash.exe 都在才算）、`where bash` 探测脚本与解析、WSL 启动器排除、`--version` 实测、`bashCwdOf` 盘符拼写、provisioned 载荷的 PATH 前缀；探测命中 Niubash 放置时写入引擎 presence 缓存（注入门控用） |
+| `lib/bash-payload.js` | 钉版 bash 载荷与部署器：pin 优先读包内 `runtime/niubash/manifest.json`（打包期生成），缺失回退内置 v1.5.0 常量；载荷来源 `payloadPath` → 包内暂存归档（digest 一致时离线可用）→ 在线下载；下载或本机副本 → 摘要校验 → node zlib+tar 本机解包 → SFTP 整树上传（stage + rename 发布）→ 远端 `--version` 完整性确认 → 回执 `.provisioned.json` + manifest 副本 → 记入主机条目（含 placement / releaseTag）；支持 `installRoot` / `placement` 决定目标根（Niubash 三级放置） |
+| `lib/guidance.js` | 注入文本单一来源：`SSH_WORKSPACE_GUIDANCE` 公告全文、Niubash 使用要点段（ops 风格改写）、`sshGuidanceForCwd` 状态门控（会话 cwd → 主机别名 → 条目记录 / presence 缓存，未命中一个字节不加）；`/injected` 路由与面板展示页读同一份 |
+| `scripts/stage-niubash.mjs` | 打包期载荷暂存（npm `prepack` / `npm run stage:niubash`）：GitHub 最新 release → win-x64 资产 → 摘要校验 → 形状发现（prefix / bash.exe 相对路径与摘要）→ `runtime/niubash/` + `manifest.json`；幂等、`--dry-run` 绝不联网、`NIUBASH_ARCHIVE` 指本地归档、缺载荷时真实打包明确报错 |
 | `lib/local-exec-skill.js` | 自动注入技能 `local-exec`：经宿主 `skills.register` 注册进模型技能目录（`source: 'runtime'`、`userInvocable: false` 不进输入框技能菜单），正文讲清「workdir 决定命令落点」的路由规则、通道辨析、围栏与端口转发；skills 服务缺失只告警跳过，注册结论写入共享 sink 供 `/skill` 路由与面板展示 |
 | `lib/peers.js` | 依赖定位与加载：本包 `node_modules` → `DSH_PEER_ROOT` → 各 profile → 部署自带树 |
 | `lib/diagnostics.js` | 面向用户的诊断环形缓冲（固定 40 条）：连接 / 连接失败 / 断连 / 重连 / 降级 / 上游补丁结论。宿主无 console exporter 且 `debug` 被默认级别丢弃，所以这些信息只能从这里经由 status 工具与面板路由呈现 |
@@ -228,7 +230,17 @@ npm pack                                    # 生成 shiqyka-dsh-ssh-workspace-<
 
 要点：
 
-- 包内容由 `package.json` 的 `files` 白名单控制：`lib/`、`cordis.patch.yml`、`README.md`。
+- 包内容由 `package.json` 的 `files` 白名单控制：`lib/`、`runtime/`（prepack 暂存的
+  Niubash 载荷 + manifest.json）、`cordis.patch.yml`、`README.md`。
+- **prepack 自动拉取载荷**：`npm pack` 会先跑 `scripts/stage-niubash.mjs`（npm
+  `prepack` 生命周期；也可 `npm run stage:niubash` 手动执行）——向 GitHub 拉取
+  unixwin/niubash **最新 release** 的 `niubash-v*-win-x64.tar.gz`，校验后暂存进
+  `runtime/niubash/` 并生成 `manifest.json`。幂等（已暂存且 sha256 一致即跳过）；
+  `NIUBASH_ARCHIVE=<本地归档>` 跳过下载（镜像 / 预先下载场景）。缺归档且无法下载时
+  真实打包**明确报错**退出——绝不会静默出一个没有载荷的包。
+- **离线 guard**：`npm pack --dry-run`（含 `npm run check`）下脚本**绝不联网**，
+  只校验已暂存内容；什么都没暂存时打印提示并以 0 退出（运行时回退内置 v1.5.0
+  pin + 在线下载），保证 `npm run check` 在离线环境可过。
 - 每批改动**升一个 patch 版本号**，tgz 文件名随之变化，profile 依赖指向也要同步。
 - 客户端接管依赖 `dsh.bundle.patch`（`cordis.patch.yml`）与 `dsh.client.platform: web` 声明，改动这些元数据同样需要重装。
 - 不打包、不安装时，源码改动不影响已安装副本——已安装版本始终以 profile 内 `node_modules` 为准。

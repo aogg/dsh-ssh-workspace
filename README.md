@@ -240,9 +240,13 @@ npm ci          # ssh2 是直接依赖，不随 clone 到位
 | --- | --- |
 | shell 命令远端化 | 会话工作区是 `ssh://` 时，`pwsh` / `bash` 工具在远端执行——一次性命令、后台任务、超时与中止都按 DSH 的进程契约工作；本地 `workdir` 的命令不受影响。方言按主机判定：POSIX 主机走 POSIX shell；Windows 主机优先用远端自己的 POSIX bash（探测 → 可用 `ssh_workspace_bash` 部署 → 才回退 cmd.exe） |
 | Windows 主机 bash 化 | win 主机按固定候选路径（Git / scoop / chocolatey / MSYS2）加 `where bash` 探测 POSIX bash，候选逐个 `--version` 实测、按连接缓存；探测不到可显式部署钉版载荷（niubash，DSH 侧下载/校验/解包，仅 SFTP 上传 + 远端 `--version` 自检），部署后远端 rg / git 随载荷可用；都没有才回退 cmd.exe（原 cmd 拼法不变） |
+| Niubash 载荷化（打包拉取） | 打包期（npm `prepack`）自动向 GitHub 拉取 unixwin/niubash **最新 release** 的 win-x64 便携包，校验后随包分发（`runtime/niubash/` + 生成的 `manifest.json`）；幂等且离线 guard（`npm pack --dry-run` 绝不联网只校验），`NIUBASH_ARCHIVE` 可指向本地归档；运行时优先读包内 manifest 派生 pin，包内归档 digest 一致时部署**完全离线**，裸仓库回退内置 v1.5.0 常量 + 在线下载 |
+| Niubash 三级加载路径与初始化弹窗 | win 主机的 Niubash 放置路径三选一：① `<远端项目目录>\.dsh\runtimes\plugins\dsh-ssh-workspace\niubash\`（挂载了项目工作区时可选）② `<远端用户目录>\.dsh\runtimes\plugins\dsh-ssh-workspace\niubash\`（默认推荐）③ 用户选择的目录（弹窗自定义输入）；解析已有 Niubash 时条目记录的路径优先，未记录则按 ①→②→③ 探测（`manifest.json` + bash.exe 都在且实测可用才算），旧部署根 `~/.dsh-ssh-workspace/bash/<版本>` 的既有条目继续兼容（记录路径仍被信任）。win 主机卡片有「初始化 Niubash」按钮：弹窗显示当前状态（未初始化 / 已初始化：远端路径+版本+时间）、三选一放置路径、初始化结果（上传文件数/字节/远端校验），进行中可取消（AbortSignal 一路传到引擎）；两条新路由 `niubash/status` + `niubash/init`，不做轮询 |
+| Niubash 状态门控注入 | 会话工作区所在主机已初始化（或探测到三级路径之一可用）时，系统提示词公告后追加该主机的「Niubash 已初始化」段：远端目录地址、版本，与 ops 风格使用要点（本机 MSYS Bash 而非 Linux/WSL/PowerShell、workdir 接受 `D:/repo` 与 `/d/repo`、drive-less `/tmp` 不是合法 workdir、MSYS 路径拼写、空格引号、Bash 而非 PowerShell 语法、载荷自带 git/rg/awk 已入 PATH、远端不碰 Windows 自带程序）；**未初始化的主机一个字节都不加** |
+| 自动注入内容展示区 | 面板新增「自动注入内容」只读区块：`SSH_WORKSPACE_GUIDANCE` 公告全文、local-exec 技能、各 win 主机的 Niubash 注入段与「命中/未命中」状态（`GET /api/dsh-ssh-workspace/injected`），插件自动注入什么、哪个主机会多收到什么，一页看全 |
 | glob / grep 远端搜索 | 调用**远端主机上的 ripgrep（`rg`）**返回真实远端结果；远端未安装 ripgrep 时得到带安装提示的明确失败（退出码 127） |
 | 变更追踪远端化 | 「变更」（deliverables）面板用**远端 git** 做回合快照与 diff——远端 shell 改的文件也会出现在变更列表（+N/−N、点开看 diff）；远端未装 git 时自动降级关闭，其余功能不受影响 |
-| `local-exec` 技能自动注入 | 插件向**模型技能目录**自动注册 `local-exec` 技能（`userInvocable: false`，不进输入框技能菜单）：讲清「命令落点由 bash / pwsh 的 workdir 决定」——会话工作区是 `ssh://` 时显式传本地 workdir（如 `/tmp`）即在本机执行、不过 SSH，并覆盖通道辨析（exec / shell / glob-grep 桥 / 终端）、沙箱围栏与端口转发方向；面板「自动注入技能」区可只读查看全文 |
+| `local-exec` 技能自动注入 | 插件向**模型技能目录**自动注册 `local-exec` 技能（`userInvocable: false`，不进输入框技能菜单）：讲清「命令落点由 bash / pwsh 的 workdir 决定」——会话工作区是 `ssh://` 时显式传本地 workdir（如 `/tmp`）即在本机执行、不过 SSH，并覆盖通道辨析（exec / shell / glob-grep 桥 / 终端）、沙箱围栏与端口转发方向；面板「自动注入内容」区可只读查看全文 |
 
 ### 界面集成
 

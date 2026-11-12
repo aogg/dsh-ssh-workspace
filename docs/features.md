@@ -15,7 +15,7 @@
 | 项 | 数值 |
 | --- | --- |
 | Agent 工具 | 11 个 `ssh_workspace_*` |
-| 浏览器 HTTP 路由 | 35 条（前缀 `/api/dsh-ssh-workspace/`，默认仅回环 + Host 头校验；webserver 绑 `0.0.0.0` 时 `allowLan` 缺省自动放宽到私网，见 [allowLan](../README.md#局域网部署allowlan)） |
+| 浏览器 HTTP 路由 | 38 条（前缀 `/api/dsh-ssh-workspace/`，默认仅回环 + Host 头校验；webserver 绑 `0.0.0.0` 时 `allowLan` 缺省自动放宽到私网，见 [allowLan](../README.md#局域网部署allowlan)） |
 | 接管的服务 seam | 4 个：`ctx.fs`、`ctx.shell`、`ctx.subprocess`、`ctx.subprocess.spawnTerminal` |
 | 桥接的宿主内建模块 | 2 个：`node:fs/promises`、`node:path` |
 | 冒烟测试套件 | 44 个（6 个需真实主机 / 完整 DSH 树，未配置时整段 SKIP） |
@@ -196,6 +196,11 @@
 | `pwsh` / `bash` 远端化 | 会话工作区是 `ssh://` 时，这两个工具的命令**在远端执行**；一次性命令、后台任务、超时与中止都按 DSH 的进程契约工作；本地 `workdir` 的命令仍在本机沙箱内。方言按主机判定（见下行） |
 | Windows 主机 bash 化 | Windows 类型主机（钉 `win` 或探测出 cmd 登录 shell）**优先用远端已有的 POSIX bash**：`bashPath`（手填）→ 已部署载荷（`bashProvisioned`）→ 自动探测（Git / scoop / chocolatey / MSYS2 固定候选 + `where bash`，排除 WSL 启动器），候选逐个 `--version` 实测、按连接缓存；有 bash 即按 POSIX 派发（exec 命令经 `bash -s` 从 stdin 喂入，绕开 cmd→bash 双层引号；持久 shell 与终端直接以该 bash 启动），**都没有才回退 cmd.exe**（原 cmd 拼法一字未改）。详见 [tools.md](./tools.md) |
 | `ssh_workspace_bash` | 显式探测（`action=detect`：当前 bash 与方言）与部署（`action=provision`：DSH 宿主侧下载 → sha256 校验 → 本机解包 → SFTP 整树上传到 `~/.dsh-ssh-workspace/bash/<版本>` → 远端 `--version` 实测 → 远端回执 `.provisioned.json` → 版本/路径记入主机条目；远端侧全程只有 SFTP 写入与 bash 自身，不碰 Windows 自带程序；载荷自带的 rg / git 随 PATH 前缀生效） |
+| Niubash 载荷化（打包拉取） | npm `prepack`（`scripts/stage-niubash.mjs`，可 `npm run stage:niubash` 手动执行）向 GitHub 拉取 unixwin/niubash **最新 release** 的 win-x64 便携包（资产名 `niubash-v*-win-x64.tar.gz`），校验后暂存进包内 `runtime/niubash/` 并生成 `manifest.json`（url / releaseTag / version / assetFile / sha256 / bytes / stagedAt + executableRelativePath + executableSha256）。幂等（已暂存且 digest 一致即跳过）、离线安全（`--dry-run` / `npm pack --dry-run` 绝不联网，只校验已暂存内容）、`NIUBASH_ARCHIVE` 可指向本地归档跳过下载；缺归档且不能下载时真实打包**明确报错**，绝不静默出空包。运行时优先读包内 manifest 派生 pin，裸仓库回退内置 v1.5.0 常量 + 在线下载；包内暂存归档 digest 一致时部署**完全离线**。详见 [tools.md](./tools.md) |
+| Niubash 三级加载路径 | 远端 win 主机上 Niubash 的放置 / 加载路径按序三选一：① `<远端项目目录>\.dsh\runtimes\plugins\dsh-ssh-workspace\niubash\`（挂载了项目工作区时可选）② `<远端用户目录>\.dsh\runtimes\plugins\dsh-ssh-workspace\niubash\`（默认推荐）③ 用户选择的目录（弹窗自定义输入）。解析已有 Niubash：主机条目记录的路径**优先**；未记录时按 ①→②→③ 默认位置探测（`manifest.json` + bash.exe 都在且 `--version` 实测才算）；旧部署根 `~/.dsh-ssh-workspace/bash/<版本>` 的既有条目继续兼容（记录路径仍被信任），新初始化一律走新路径约定。详见 [hosts.md](./hosts.md) |
+| 初始化 Niubash（面板弹窗） | `os === 'win'` 的主机卡片有「初始化 Niubash」按钮：弹窗显示当前状态（未初始化 / 已初始化：远端路径 + 版本 + 时间 / 探测到已有部署）、放置路径三选一、开始初始化展示结果（上传文件数 / 字节 / 远端校验）或错误；进行中可**取消**（abort fetch → 同一 AbortSignal 一路传到引擎中止下载 / 上传 / 校验）。已初始化的主机可查看详情、可重新初始化（换路径或升级版本，复用 force / 原子替换）。后端两条路由：`GET /niubash/status`（打开时一次查询）+ `POST /niubash/init`（发起部署），**不做轮询**。详见 [ui.md](./ui.md) |
+| Niubash 状态门控注入 | 会话工作区所在主机**已初始化**（条目有 `bashProvisioned` 记录，或探测到三级路径之一存在且 `--version` 可用）时，`SSH_WORKSPACE_GUIDANCE` 公告后追加该主机的「Niubash 已初始化」段：远端目录地址、版本，以及 ops 风格使用要点（本机 MSYS Bash 而非 Linux/WSL/PowerShell；workdir 接受 `D:/repo` 与 `/d/repo`、drive-less `/tmp` 不是合法 workdir；MSYS 路径拼写、空格加引号；用 Bash 而非 PowerShell 语法；载荷自带 git/rg/awk 已入 PATH；远端不碰 Windows 自带程序）。**未初始化的主机一个字节都不加**。门控判定是同步的：读条目记录 + 引擎内存 presence 缓存（初始化完成与探测命中时写入），绝不在注入点发网络探测 |
+| 自动注入内容全局展示页 | 面板新增「自动注入内容」只读展示区（好设计条款：插件有自动注入提示词/技能必须有全局页面展示）：`SSH_WORKSPACE_GUIDANCE` 全文、local-exec 技能、各 win 主机的 Niubash 注入段与「命中/未命中」状态，数据来自 `GET /api/dsh-ssh-workspace/injected`。详见 [ui.md](./ui.md) |
 | 无沙箱约束 | 远端命令以远端登录用户的**完整权限**运行，不受本机文件沙箱限制——正因如此，`read-only` 会话的命令执行由插件**直接拒绝**（见上节「命令执行是另一条独立的写路径」），而不是尝试围栏 |
 | `ssh_workspace_exec` | 不依赖挂载即可在远端跑命令（主机巡检、挂载根之外的路径、装机脚本），支持 `run_in_background` 与 `timeoutMs` |
 | `ssh_workspace_shell` | **持久**远端 shell：`cd`、导出的变量、后台任务跨调用保留，像一直开着的一个终端；可按名字并存多个会话；PTY 通道，退出码由命令行末尾的标记行取回 |
