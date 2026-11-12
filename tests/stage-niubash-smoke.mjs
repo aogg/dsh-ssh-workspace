@@ -26,7 +26,13 @@
  *      distinct top-level roots) is refused with exit 1 and an error naming
  *      the layout problem — no manifest is written and a payload an earlier
  *      run already staged survives byte-identical (the regression asserts the
- *      fix that turned this documented requirement into real code).
+ *      fix that turned this documented requirement into real code);
+ *   6. USTAR SPLITS (33515e5): an archive storing members the ustar way —
+ *      `prefix` field (header offset 345) + `name` tail, the official
+ *      v1.5.0 asset's 7-of-194 spelling — stages with the JOINED single root
+ *      frozen into the manifest, while the single-root rejections stay
+ *      asserted on deliberately split-free layouts so they test the
+ *      common-root logic, not the join.
  *
  * Everything runs offline: the archive is a tiny synthetic tar.gz built here,
  * the network is replaced by `tests/support/no-net-preload.cjs` (which records
@@ -92,6 +98,30 @@ function goodArchive () {
     tarEntry(`${GOOD_PREFIX}${EXE_RELATIVE}`, { data: BASH_BYTES }),
     tarEntry(`${GOOD_PREFIX}README.txt`, { data: README_BYTES }),
   )
+}
+
+// The root name without its trailing slash — the ustar prefix-field spelling
+// (the prefix field holds leading DIRECTORIES, never the trailing slash).
+const GOOD_ROOT = GOOD_PREFIX.replace(/\/$/u, '')
+
+// The hooks directory the official v1.5.0 asset splits 7 members under, and
+// a tail that pushes the joined path over 100 bytes — the condition that
+// FORCES a real ustar packer to split (so this shape cannot be spelled
+// without the prefix field at all).
+const STAGE_HOOKS_DIR = 'winuxcmd/opt/niugit/mingw64/share/git-core/templates/hooks/'
+const SPLIT_TAIL = `${STAGE_HOOKS_DIR}really-long-hook-name`
+const SPLIT_BYTES = Buffer.from('split member bytes\n')
+
+/**
+ * One 512-byte tar header written the USTAR-SPLIT way (`prefix` field at
+ * header offset 345, 155 bytes + a `name` tail; the real path is
+ * `prefix + '/' + name`) — the twin of the same helper in
+ * tests/bash-payload-smoke.mjs, so both walkers are fed the identical shape.
+ */
+function tarSplitEntry (prefix, name, { type = '0', data = Buffer.alloc(0) } = {}) {
+  const header = tarEntry(name, { type, data })
+  header.write(prefix.slice(0, 155), 345, 'utf8')
+  return header
 }
 
 // ---------------------------------------------------------------------------
@@ -393,6 +423,89 @@ console.log('\n[bad assets are refused before any manifest is written]')
   }
 }
 
+// ---------------------------------------------------------------------------
+console.log('\n[ustar-split members stage with the joined root (33515e5)]')
+
+{
+  // The official v1.5.0 asset stores 7 of its 194 members the ustar way:
+  // `prefix` field (header offset 345, 155 bytes) + `name` tail, the real
+  // path being `prefix + '/' + name`. Before 33515e5 the script's name-only
+  // walk read the tail alone, found no common root, and refused the whole
+  // asset with "no single root directory". Both spellings below MUST stage:
+  //   1. every member split-stored (extreme);
+  //   2. the asset's real shape — plain short members PLUS the split hooks
+  //      file (the join must not disturb members that never split).
+  check('fixture sanity: the split tail fits the 100-byte name field',
+    SPLIT_TAIL.length === 80 && SPLIT_TAIL.length <= 100, String(SPLIT_TAIL.length))
+  check('fixture sanity: the joined path exceeds 100 bytes (a real packer MUST split it)',
+    `${GOOD_ROOT}/${SPLIT_TAIL}`.length === 103 && `${GOOD_ROOT}/${SPLIT_TAIL}`.length > 100,
+    String(`${GOOD_ROOT}/${SPLIT_TAIL}`.length))
+
+  const fullySplit = tarGzOf(
+    tarSplitEntry(GOOD_ROOT, '', { type: '5' }),
+    tarSplitEntry(GOOD_ROOT, EXE_RELATIVE, { data: BASH_BYTES }),
+    tarSplitEntry(GOOD_ROOT, 'README.txt', { data: README_BYTES }),
+    tarSplitEntry(GOOD_ROOT, SPLIT_TAIL, { data: SPLIT_BYTES }),
+  )
+  const hybrid = tarGzOf(
+    tarEntry(GOOD_ROOT, { type: '5' }),
+    tarEntry(`${GOOD_PREFIX}${EXE_RELATIVE}`, { data: BASH_BYTES }),
+    tarEntry(`${GOOD_PREFIX}README.txt`, { data: README_BYTES }),
+    tarSplitEntry(GOOD_ROOT, SPLIT_TAIL, { data: SPLIT_BYTES }),
+  )
+  for (const [label, bytes] of [
+    ['a fully split-stored archive', fullySplit],
+    ['the official-asset hybrid (plain members + one split hooks file)', hybrid],
+  ]) {
+    const dir = sandbox()
+    try {
+      const archive = localArchive(dir, bytes)
+      const outcome = runStage(dir, { env: { NIUBASH_ARCHIVE: archive } })
+      check(`${label}: staging exits 0`, outcome.status === 0, `exit ${outcome.status} — ${outcome.stderr}`)
+      check(`${label}: no network attempt`, outcome.fetchLog.length === 0, JSON.stringify(outcome.fetchLog))
+      const manifest = manifestOf(dir)
+      check(`${label}: manifest.prefix is the JOINED single root, trailing slash kept`,
+        manifest.prefix === GOOD_PREFIX, String(manifest.prefix))
+      check(`${label}: the executable and its digest are discovered through the join`,
+        manifest.executableRelativePath === EXE_RELATIVE && manifest.executableSha256 === BASH_SHA,
+        JSON.stringify({ executableRelativePath: manifest.executableRelativePath, executableSha256: manifest.executableSha256 }))
+      check(`${label}: the staged archive is byte-exact`,
+        readFileSync(path.join(dir, 'runtime', 'niubash', ASSET_NAME)).equals(bytes))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+}
+
+{
+  // A SPLIT-stored foreign-root member cannot smuggle a second root past the
+  // layout walk: its REAL directory (`other/`, after the join) joins the
+  // common-root discovery and collapses it, so the single-root rejection
+  // fires — the same branch the real v1.5.0 asset's 7 split members used to
+  // trip (pre-fix, their name-only tails collapsed the walk too, via a
+  // phantom root-level file). The join's observable win is that the walk now
+  // runs on real paths (asserted by the staging cases above); the pinned-root
+  // guard with its own wording ("outside the pinned root") lives on the
+  // runtime side, where the pin fixes the root a priori, and is covered by
+  // tests/bash-payload-smoke.mjs.
+  const dir = sandbox()
+  try {
+    const archive = localArchive(dir, tarGzOf(
+      tarEntry(GOOD_ROOT, { type: '5' }),
+      tarEntry(`${GOOD_PREFIX}${EXE_RELATIVE}`, { data: BASH_BYTES }),
+      tarSplitEntry('other', 'stray.txt', { data: Buffer.from('x') }),
+    ))
+    const outcome = runStage(dir, { env: { NIUBASH_ARCHIVE: archive } })
+    check('a split-stored member whose joined path escapes the root is refused with exit 1',
+      outcome.status === 1, `exit ${outcome.status} — ${outcome.stderr.slice(0, 200)}`)
+    check('the refusal names the single-root requirement (the joined foreign root collapsed the walk)',
+      outcome.stderr.includes('no single root directory'), outcome.stderr.slice(0, 300))
+    check('the escapee refusal writes no manifest', !existsSync(path.join(dir, 'runtime', 'niubash', 'manifest.json')))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
 {
   // The single-root requirement is REAL code now (999f24f): inspectArchive
   // used to answer exit 0 with a `prefix: ""` manifest for both shapes below
@@ -401,6 +514,11 @@ console.log('\n[bad assets are refused before any manifest is written]')
   // rewrite of a payload an earlier run already staged: the refusal happens
   // before the copy, the stale sweep, and the manifest write, so nothing in
   // runtime/ may move.
+  //
+  // Both layouts are DELIBERATELY split-free (short paths, an all-NUL prefix
+  // field): these cases must exercise the common-root logic, not the ustar
+  // join — the join's own contract lives in the section above, and neither
+  // fixture changed behavior when the join landed (a no-op on short paths).
   const multiRoot = tarGzOf(
     tarEntry('a', { type: '5' }),
     tarEntry('a/bash.exe', { data: BASH_BYTES }),

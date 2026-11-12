@@ -49,7 +49,7 @@ function check (label, ok, detail) {
   }
 }
 
-const { BASH_PAYLOAD_PIN, bashReceiptText, bashExePathOf, provisionWinBash, readBashTarGz, safeBashMember, sha256File, stageBashTree } = await import(pathToFileURL(path.join(pluginRoot, 'lib/bash-payload.js')).href)
+const { BASH_PAYLOAD_PIN, bashReceiptText, bashExePathOf, provisionWinBash, readBashTarGz, listBashTarGzMembers, safeBashMember, sha256File, stageBashTree } = await import(pathToFileURL(path.join(pluginRoot, 'lib/bash-payload.js')).href)
 
 console.log('\n=== bash payload smoke ===\n')
 
@@ -144,6 +144,27 @@ function tarEntry (name, { type = '0', data = Buffer.alloc(0), link = '' } = {})
 
 function tarGzOf (...entries) {
   return gzipSync(Buffer.concat(entries))
+}
+
+/**
+ * One 512-byte tar header written the USTAR-SPLIT way — the spelling the
+ * official niubash v1.5.0 asset uses for 7 of its 194 members: a path longer
+ * than the 100-byte `name` field is stored as a `prefix` field (header
+ * offset 345, 155 bytes — the leading directories) plus a `name` tail, and
+ * the real path is `prefix + '/' + name`.
+ *
+ * @param {string} prefix - the leading directories; written verbatim when
+ *   `prefixRaw` is given (the normalization cases spell it with surrounding
+ *   blanks or a whitespace-only field), NUL-padded by the zeroed buffer
+ *   otherwise.
+ * @param {string} name - the tail; must fit the 100-byte field.
+ * @param {object} [options] - same member options as {@link tarEntry}.
+ * @returns {Buffer} the 512-byte header + data + padding.
+ */
+function tarSplitEntry (prefix, name, { type = '0', data = Buffer.alloc(0), link = '', prefixRaw } = {}) {
+  const header = tarEntry(name, { type, data, link })
+  header.write((prefixRaw ?? prefix).slice(0, 155), 345, 'utf8')
+  return header
 }
 
 async function extract (archivePath, pin = testPin()) {
@@ -246,6 +267,181 @@ await expectRefusal('an archive without the pinned executable is refused',
     let threw
     try { await extract(archive) } catch (error) { threw = error.message }
     check('a non-gzip file is refused before any tar parsing', threw?.includes('not readable gzip'), String(threw))
+  } finally {
+    rmSync(path.dirname(archive), { recursive: true, force: true })
+  }
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n[readBashTarGz: ustar prefix/name splits (33515e5)]')
+//
+// The official niubash v1.5.0 asset stores 7 of its 194 members the ustar
+// way: a path longer than the 100-byte `name` field is split into a `prefix`
+// field (header offset 345, 155 bytes — the leading directories) plus a
+// `name` tail, and the real path is `prefix + '/' + name`. Before 33515e5
+// the walk read the `name` field alone, so every split member arrived
+// root-less and the pin-prefix guard refused it as "member outside the
+// pinned root" — a false report about perfectly pinned bytes (exactly what
+// the real asset produced). Every split fixture below is spelled so it
+// CANNOT be represented without the prefix field: the joined path exceeds
+// 100 bytes, the condition that forces a real packer to split.
+
+// The v1.5.0-shaped split member: the root rides in `prefix`, the tail fills
+// the 100-byte `name` field to its last byte (the hooks files the real asset
+// splits live under exactly this directory tree).
+const SPLIT_PREFIX = 'pkg'
+const HOOKS_DIR = 'winuxcmd/opt/niugit/mingw64/share/git-core/templates/hooks/'
+const SPLIT_TAIL = `${HOOKS_DIR}really-long-hook-name-filling-the-100byte`
+const SPLIT_BYTES = Buffer.from('split member bytes\n')
+
+check('fixture sanity: the split tail fills the 100-byte name field exactly',
+  SPLIT_TAIL.length === 100, String(SPLIT_TAIL.length))
+check('fixture sanity: the joined path is over 100 bytes (only a split header can carry it)',
+  `${SPLIT_PREFIX}/${SPLIT_TAIL}`.length === 104 && `${SPLIT_PREFIX}/${SPLIT_TAIL}`.length > 100,
+  String(`${SPLIT_PREFIX}/${SPLIT_TAIL}`.length))
+// The counter-evidence in one line: the pre-fix name-only walk read exactly
+// this tail, which carries no `pkg/` root, so its
+// `!rawName.startsWith(pin.prefix)` guard HAD to fire ("outside the pinned
+// root"). The happy path below is this same member extracting fine.
+check('fixture sanity: the tail alone does NOT start with the pin prefix (the pre-fix walk refused exactly this)',
+  !SPLIT_TAIL.startsWith(`${SPLIT_PREFIX}/`), SPLIT_TAIL)
+
+{
+  // The happy path: every member the pin needs, stored split — including the
+  // root directory (prefix=`pkg`, name=``) and a legal-but-unusual split
+  // spelling of the short executable (a real packer splits only >100-byte
+  // paths, but ustar allows the spelling and the reader must join it all the
+  // same). The whole archive must pass the pin gates unchanged: the join
+  // happens BEFORE the prefix guard and BEFORE the executable digest check.
+  const archive = path.join(mkdtempSync(path.join(tmpdir(), 'dsh-bash-payload-')), 'split.tar.gz')
+  try {
+    writeFileSync(archive, tarGzOf(
+      tarSplitEntry(SPLIT_PREFIX, '', { type: '5' }),
+      tarSplitEntry(SPLIT_PREFIX, 'winuxcmd/usr/bin/bash.exe', { data: EXE_BYTES }),
+      tarSplitEntry(SPLIT_PREFIX, SPLIT_TAIL, { data: SPLIT_BYTES }),
+      tarEntry('pkg/README.txt', { data: README_BYTES }),
+    ))
+    const { files, executableBytes, totalBytes } = await extract(archive)
+    check('a split root directory member (prefix=pkg, name="") is consumed, not extracted',
+      !files.has('') && !files.has('pkg') && !files.has('pkg/'), JSON.stringify([...files.keys()]))
+    check('the split-stored executable still digest-checks against the pin (join runs before the gates)',
+      executableBytes.equals(EXE_BYTES), JSON.stringify([...files.keys()]))
+    check('a >100-byte real path reads as prefix/name joined, not as a root-less tail',
+      files.get(SPLIT_TAIL)?.equals(SPLIT_BYTES) === true, JSON.stringify([...files.keys()]))
+    check('the joined member is stored under its stripped real name (pkg/ stripped like any member)',
+      files.has(SPLIT_TAIL) && !files.has(`pkg/${SPLIT_TAIL}`), JSON.stringify([...files.keys()]))
+    check('a short member in the same archive is untouched (its all-NUL prefix field joins to itself)',
+      files.get('README.txt')?.equals(README_BYTES) === true, JSON.stringify([...files.keys()]))
+    check('totalBytes counts the split file like any regular file',
+      totalBytes === EXE_BYTES.length + SPLIT_BYTES.length + README_BYTES.length, String(totalBytes))
+  } finally {
+    rmSync(path.dirname(archive), { recursive: true, force: true })
+  }
+}
+
+{
+  // Prefix-field normalization: NUL-padded (the buffer default), surrounded
+  // by blanks, or space-padded across the full 155-byte field must all join
+  // to the same real path — the reader strips NULs then trims, mirroring
+  // tarOctal. A whitespace-ONLY prefix field reduces to '' and joins to
+  // nothing: the name-only behavior (and every pre-33515e5 archive) is
+  // unchanged.
+  const archive = path.join(mkdtempSync(path.join(tmpdir(), 'dsh-bash-payload-')), 'split-padding.tar.gz')
+  try {
+    writeFileSync(archive, tarGzOf(
+      tarSplitEntry(SPLIT_PREFIX, 'winuxcmd/usr/bin/bash.exe', { data: EXE_BYTES }),
+      tarSplitEntry(SPLIT_PREFIX, 'winuxcmd/opt/hooks/a.txt', { data: Buffer.from('a\n'), prefixRaw: `  ${SPLIT_PREFIX}  \0` }),
+      tarSplitEntry(SPLIT_PREFIX, 'winuxcmd/opt/hooks/b.txt', { data: Buffer.from('b\n'), prefixRaw: SPLIT_PREFIX.padEnd(155, ' ') }),
+      tarSplitEntry('', 'pkg/README.txt', { data: README_BYTES, prefixRaw: '   \0' }),
+    ))
+    const { files } = await extract(archive)
+    check('a prefix field of surrounding blanks + NUL padding joins to the clean spelling',
+      files.get('winuxcmd/opt/hooks/a.txt')?.equals(Buffer.from('a\n')) === true, JSON.stringify([...files.keys()]))
+    check('a prefix field space-padded across the full 155 bytes joins to the clean spelling',
+      files.get('winuxcmd/opt/hooks/b.txt')?.equals(Buffer.from('b\n')) === true, JSON.stringify([...files.keys()]))
+    check('a whitespace-only prefix field joins to nothing: the member reads name-only as before the fix',
+      files.get('README.txt')?.equals(README_BYTES) === true, JSON.stringify([...files.keys()]))
+  } finally {
+    rmSync(path.dirname(archive), { recursive: true, force: true })
+  }
+}
+
+{
+  // Hardlinks: the member NAME may be split-stored and joins like any other
+  // member, but the `linkname` field gets NO prefix processing — ustar
+  // defines the prefix split for `name` only, and the pinned asset writes
+  // full in-archive paths (≤100 bytes) as linknames.
+  const archive = path.join(mkdtempSync(path.join(tmpdir(), 'dsh-bash-payload-')), 'split-hardlink.tar.gz')
+  try {
+    writeFileSync(archive, tarGzOf(
+      tarEntry('pkg/winuxcmd/usr/bin/bash.exe', { data: EXE_BYTES }),
+      tarSplitEntry(SPLIT_PREFIX, 'winuxcmd/bin/bash.exe', { type: '1', link: 'pkg/winuxcmd/usr/bin/bash.exe' }),
+      tarSplitEntry(SPLIT_PREFIX, SPLIT_TAIL, { data: SPLIT_BYTES }),
+      tarSplitEntry(SPLIT_PREFIX, 'winuxcmd/bin/bash-2.exe', { type: '1', link: SPLIT_TAIL }),
+    ))
+    const { files } = await extract(archive)
+    check('a split-stored hardlink member resolves its plain full-path linkname to the earlier target',
+      files.get('winuxcmd/bin/bash.exe')?.equals(EXE_BYTES) === true, JSON.stringify([...files.keys()]))
+    check('a linkname that omits the root still resolves against the split target\'s joined key (no double join, no mismatch)',
+      files.get('winuxcmd/bin/bash-2.exe')?.equals(SPLIT_BYTES) === true, JSON.stringify([...files.keys()]))
+  } finally {
+    rmSync(path.dirname(archive), { recursive: true, force: true })
+  }
+}
+
+await expectRefusal('a hardlink whose >100-byte target truncates inside the 100-byte linkname field names nothing (no prefix rescue)',
+  [
+    tarEntry('pkg/winuxcmd/usr/bin/bash.exe', { data: EXE_BYTES }),
+    tarEntry('pkg/link.exe', { type: '1', link: `pkg/${'x'.repeat(200)}` }),
+  ],
+  'hardlink with no earlier target')
+await expectRefusal('a hardlink whose linkname sits outside the pinned root is still refused (the split join never applies to linknames)',
+  [
+    tarEntry('pkg/winuxcmd/usr/bin/bash.exe', { data: EXE_BYTES }),
+    tarEntry('pkg/link.exe', { type: '1', link: 'outside/stray.txt' }),
+  ],
+  'hardlink with no earlier target')
+
+// ---------------------------------------------------------------------------
+console.log('\n[listBashTarGzMembers: the packer-side walk joins too]')
+//
+// The packaging-side twin of readBashTarGz (its other 33515e5 fix site).
+// This walk had no suite of its own anywhere — the exact kind of gap a
+// real-asset-only bug slips through — so its split behavior is pinned here.
+
+{
+  const archive = path.join(mkdtempSync(path.join(tmpdir(), 'dsh-bash-payload-')), 'list-split.tar.gz')
+  try {
+    writeFileSync(archive, tarGzOf(
+      tarSplitEntry(SPLIT_PREFIX, '', { type: '5' }),
+      tarSplitEntry(SPLIT_PREFIX, 'winuxcmd/usr/bin/bash.exe', { data: EXE_BYTES }),
+      tarSplitEntry(SPLIT_PREFIX, SPLIT_TAIL, { data: SPLIT_BYTES }),
+      tarEntry('pkg/README.txt', { data: README_BYTES }),
+    ))
+    const { prefix, members, bashMembers } = await listBashTarGzMembers(archive)
+    check('the single root is discovered from split members (joined before the common-root walk)',
+      prefix === 'pkg/', JSON.stringify(prefix))
+    check('split members are keyed by their joined full name',
+      members.has(`pkg/${SPLIT_TAIL}`) && members.has('pkg/winuxcmd/usr/bin/bash.exe'), JSON.stringify([...members.keys()]))
+    check('a short member keys exactly as stored (the join is a no-op there)',
+      members.has('pkg/README.txt'), JSON.stringify([...members.keys()]))
+    check('directory members are not listed', !members.has('pkg') && !members.has('pkg/'), JSON.stringify([...members.keys()]))
+    check('the split-stored executable is a bash.exe candidate', bashMembers.includes('pkg/winuxcmd/usr/bin/bash.exe'), JSON.stringify(bashMembers))
+  } finally {
+    rmSync(path.dirname(archive), { recursive: true, force: true })
+  }
+}
+
+{
+  const archive = path.join(mkdtempSync(path.join(tmpdir(), 'dsh-bash-payload-')), 'list-flat.tar.gz')
+  try {
+    writeFileSync(archive, tarGzOf(
+      tarEntry('bash.exe', { data: EXE_BYTES }),
+      tarEntry('readme.txt', { data: README_BYTES }),
+    ))
+    const { prefix } = await listBashTarGzMembers(archive)
+    check('an archive whose members sit at the root reports an empty prefix (the packer rejects that layout)',
+      prefix === '', JSON.stringify(prefix))
   } finally {
     rmSync(path.dirname(archive), { recursive: true, force: true })
   }

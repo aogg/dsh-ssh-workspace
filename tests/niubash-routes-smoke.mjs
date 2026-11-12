@@ -15,8 +15,11 @@
  *      editable-store gate (an ~/.ssh/config fallback cannot carry the
  *      record), the project/custom placement inputs; `placement: 'user'`
  *      rides through to the provisioner (the receipt stat names the
- *      `%USERPROFILE%` root); a browser abort (`req → close`) reaches the
- *      provisioner as an AbortSignal and writes NOTHING to the socket;
+ *      `%USERPROFILE%` root); an ABSENT (or blank) placement defaults to
+ *      'user' the same way (33515e5 — the dialog's and docs' default), a
+ *      present-but-unknown value still answers 400; a browser abort
+ *      (`req → close`) reaches the provisioner as an AbortSignal and writes
+ *      NOTHING to the socket;
  *   3. **the injected-content page** shows exactly what the model sees — the
  *      announcement verbatim, one row per Windows-type host plus any host
  *      with a record (a mac host without one is absent), hit rows carrying
@@ -30,12 +33,14 @@
  * Handlers are driven with synthetic request/response doubles, so no server,
  * no SSH host, and no network are involved (`globalThis.fetch` throws; the
  * offline init paths are proven through the reuse gate and the stub's own
- * marker error).
+ * marker error). The suite imports lib/ from a sandbox COPY so a developer
+ * checkout that already staged the real payload (`npm run stage:niubash`,
+ * `prepack`) cannot flip the bundled-pin expectations — see below.
  *
  * Run: node tests/niubash-routes-smoke.mjs
  */
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -54,6 +59,22 @@ process.env.DSH_PEER_ROOT = [coreRoot, process.env.DSH_PEER_ROOT].filter(Boolean
 
 const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
+// A sandbox COPY of lib/ keeps this suite hermetic against the repo tree it
+// runs in: `resolvePayloadPin()` prefers `runtime/niubash/` NEXT TO the
+// bash-payload module, and a checkout that already staged the real payload
+// (a 33MB gitignored tree that `npm run stage:niubash` / `prepack` write)
+// used to flip every "bare checkout → bundled pin" expectation to
+// source:'manifest' — three false failures with the payload present, none
+// without it. The copy (the same discipline niubash-payload-smoke uses)
+// pins the suite to the bare-checkout contract on EVERY machine; the peer
+// packages still resolve through DSH_PEER_ROOT, which is location-free.
+const libSandbox = mkdtempSync(path.join(tmpdir(), 'dsh-niubash-routes-lib-'))
+mkdirSync(path.join(libSandbox, 'lib'), { recursive: true })
+for (const file of readdirSync(path.join(pluginRoot, 'lib'))) {
+  copyFileSync(path.join(pluginRoot, 'lib', file), path.join(libSandbox, 'lib', file))
+}
+const libRoot = path.join(libSandbox, 'lib')
+
 let passed = 0
 let failures = 0
 function check (label, ok, detail) {
@@ -65,11 +86,11 @@ function check (label, ok, detail) {
 
 console.log('\n=== niubash routes smoke ===\n')
 
-const { makeRoutes, ROUTES } = await import(pathToFileURL(path.join(pluginRoot, 'lib/routes.js')).href)
-const { HostConfigStore } = await import(pathToFileURL(path.join(pluginRoot, 'lib/store.js')).href)
-const { HostStore } = await import(pathToFileURL(path.join(pluginRoot, 'lib/hosts.js')).href)
-const { BASH_PAYLOAD_PIN, NIUBASH_RUNTIME_RELATIVE, resolvePayloadPin } = await import(pathToFileURL(path.join(pluginRoot, 'lib/bash-payload.js')).href)
-const { SSH_WORKSPACE_GUIDANCE, niubashGuidanceSection } = await import(pathToFileURL(path.join(pluginRoot, 'lib/guidance.js')).href)
+const { makeRoutes, ROUTES } = await import(pathToFileURL(path.join(libRoot, 'routes.js')).href)
+const { HostConfigStore } = await import(pathToFileURL(path.join(libRoot, 'store.js')).href)
+const { HostStore } = await import(pathToFileURL(path.join(libRoot, 'hosts.js')).href)
+const { BASH_PAYLOAD_PIN, NIUBASH_RUNTIME_RELATIVE, resolvePayloadPin } = await import(pathToFileURL(path.join(libRoot, 'bash-payload.js')).href)
+const { SSH_WORKSPACE_GUIDANCE, niubashGuidanceSection } = await import(pathToFileURL(path.join(libRoot, 'guidance.js')).href)
 
 // What a real cmd.exe echoes for the user level: %VAR% expands while cmd
 // PARSES the probe line, so the hit marker carries the CONCRETE root — the
@@ -282,6 +303,59 @@ console.log('\n[POST /niubash/init: validation, placement, cancellation]')
     noProject.status === 400 && noProject.body.error.includes('not a workspace mounted from this host'), noProject.raw)
   check('a custom placement without a directory answers 400',
     noCustom.status === 400 && noCustom.body.error.includes('customRoot is required'), noCustom.raw)
+  const upperPlacement = await callJson(init, { body: { alias: 'win-bare', placement: 'USER' } })
+  check('a present-but-unknown placement answers 400 even case-shifted (the trim only normalizes blanks, not case)',
+    upperPlacement.status === 400 && upperPlacement.body.error.includes('project, user, custom'), upperPlacement.raw)
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n[POST /niubash/init: placement is optional and defaults to user (33515e5)]')
+
+{
+  // The offline reuse path is the assertion surface: placementOf(options)
+  // echoes the placement into `provisioned.placement`, and ONLY the 'user'
+  // placement steers the receipt stat to the %USERPROFILE% niubash root — a
+  // legacy fall-through (no placement riding through at all) would stat the
+  // `.dsh-ssh-workspace/bash/<version>` store instead. So both observations
+  // together prove the default 'user' actually reached the provisioner.
+  const engine = routeEngine()
+  engine.loginDialect = async () => 'cmd'
+  engine.execRaw = async (_alias, command) => ({
+    success: true, exitCode: 0,
+    stdout: command.includes('--version') ? 'GNU bash, version 5.2.26(1)-release (x86_64-pc-msys)\r\n' : 'C:\\Users\\ao\r\n',
+    stderr: '', timedOut: false, truncated: false, durationMs: 0,
+  })
+  const receipt = Buffer.from(JSON.stringify({ schemaVersion: 1, name: 'bash', version: BASH_PAYLOAD_PIN.version, sha256: BASH_PAYLOAD_PIN.sha256 }))
+  const statPaths = []
+  engine.withSftp = async (_alias, operation) => await operation({
+    stat (target, callback) { statPaths.push(target); callback(null, { isFile: () => true }) },
+    open (target, flags, callback) { callback(null, { __handle: target }) },
+    read (handle, buffer, _offset, length, position, callback) {
+      if (position === 0 && handle.__handle !== undefined) {
+        buffer.set(receipt.subarray(0, Math.min(length, receipt.length)))
+        callback(null, receipt.length)
+      } else callback(null, 0)
+    },
+    close (handle, callback) { callback(null) },
+  })
+  const routes = routesOf(engine)
+  const init = routes.find(route => route.path === ROUTES.niubashInit)
+  const userRootReceipt = `/C:/Users/ao/${NIUBASH_RUNTIME_RELATIVE.replaceAll('\\', '/')}/.provisioned.json`
+
+  const noPlacement = await callJson(init, { body: { alias: 'win-bare' } })
+  check('a body without placement at all is a valid init (ok:true, reused offline)',
+    noPlacement.body.ok === true && noPlacement.body.provisioned?.reused === true, noPlacement.raw)
+  check('the absent placement reached the provisioner as user (echoed in the outcome)',
+    noPlacement.body.provisioned?.placement === 'user', JSON.stringify(noPlacement.body.provisioned))
+  check('the default steered the receipt stat to the %USERPROFILE% niubash root (not the legacy version store)',
+    statPaths.at(-1) === userRootReceipt, JSON.stringify(statPaths))
+
+  const beforeBlank = statPaths.length
+  const blank = await callJson(init, { body: { alias: 'win-bare', placement: '   ' } })
+  check('a blank placement falls back to user too (trimmed to empty, then defaulted)',
+    blank.body.ok === true && blank.body.provisioned?.placement === 'user'
+    && statPaths.length === beforeBlank + 1 && statPaths.at(-1) === userRootReceipt,
+    JSON.stringify({ body: blank.body, stat: statPaths.at(-1) }))
 }
 
 {
@@ -417,6 +491,7 @@ console.log('\n[hostSave: the auto-deploy wish round-trips and kicks]')
 }
 
 rmSync(home, { recursive: true, force: true })
+rmSync(libSandbox, { recursive: true, force: true })
 
 console.log(`\n=== ${passed} passed, ${failures} failed ===`)
 process.exit(failures === 0 ? 0 : 1)
