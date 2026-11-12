@@ -20,7 +20,13 @@
  *      network answers exit 1, and a bad asset (non-gzip bytes, an archive
  *      without the bash executable, a pointer that is not a file, a file name
  *      that is not a niubash win-x64 package name) is refused before any
- *      manifest is written.
+ *      manifest is written;
+ *   5. SINGLE ROOT: an archive whose members share no single top-level root
+ *      directory (members sitting at the archive root, or spread over several
+ *      distinct top-level roots) is refused with exit 1 and an error naming
+ *      the layout problem — no manifest is written and a payload an earlier
+ *      run already staged survives byte-identical (the regression asserts the
+ *      fix that turned this documented requirement into real code).
  *
  * Everything runs offline: the archive is a tiny synthetic tar.gz built here,
  * the network is replaced by `tests/support/no-net-preload.cjs` (which records
@@ -388,17 +394,13 @@ console.log('\n[bad assets are refused before any manifest is written]')
 }
 
 {
-  // DEFECT REPORT (not papered over): the script's header comment and inline
-  // comment both claim a multi-root archive is rejected ("the single-root
-  // requirement below then rejects"), but the membership check
-  // `!name.startsWith(root)` can never fire when the shared root is `''` —
-  // every string starts with the empty string. Today such an archive stages
-  // with exit 0 and a manifest whose `prefix` is `''`. The runtime side stays
-  // safe (readPayloadManifest requires a prefix ending in `/`, so the pin
-  // degrades to the bundled constant and the staged archive becomes dead
-  // weight in the package), which is the invariant asserted below, but the
-  // documented "reject multi-root at stage time" behavior does not exist.
-  // Reported to the implementer; do not tighten lib/ from the test side.
+  // The single-root requirement is REAL code now (999f24f): inspectArchive
+  // used to answer exit 0 with a `prefix: ""` manifest for both shapes below
+  // (the membership check `!name.startsWith('')` can never fire). Each must
+  // be refused loudly — exit 1, an error naming the layout problem, and no
+  // rewrite of a payload an earlier run already staged: the refusal happens
+  // before the copy, the stale sweep, and the manifest write, so nothing in
+  // runtime/ may move.
   const multiRoot = tarGzOf(
     tarEntry('a', { type: '5' }),
     tarEntry('a/bash.exe', { data: BASH_BYTES }),
@@ -415,19 +417,40 @@ console.log('\n[bad assets are refused before any manifest is written]')
   ]) {
     const dir = sandbox()
     try {
-      const archive = localArchive(dir, bytes)
-      const outcome = runStage(dir, { env: { NIUBASH_ARCHIVE: archive } })
-      if (outcome.status !== 0) {
-        check(`${label} is rejected at stage time`, true)
-      } else {
-        const manifest = manifestOf(dir)
-        // The invariant that actually protects provisioning: a prefix without
-        // a trailing slash can never pass the runtime pin's validation, so the
-        // misdescribed payload is never provisioned from.
-        check(`${label}: whatever staging answers, the runtime pin validation would reject the result`,
-          typeof manifest.prefix === 'string' && !manifest.prefix.endsWith('/'),
-          `staging exited 0 and wrote prefix ${JSON.stringify(manifest.prefix)} — see the defect report in this suite's source`)
-      }
+      // Pre-stage a GOOD payload first. With a CONSISTENT stage the
+      // idempotence short-circuit outranks the pointer — a bad
+      // NIUBASH_ARCHIVE never even reaches the inspector — which is a
+      // designed precedence worth pinning, and the reason the refusal case
+      // below tampers the staged archive first: a stage that is present but
+      // inconsistent is the shape that actually reaches inspectArchive.
+      check(`${label}: precondition — a good archive stages first`,
+        runStage(dir, { env: { NIUBASH_ARCHIVE: localArchive(dir, goodArchive()) } }).status === 0, 'the precondition staging failed')
+      const manifestBefore = readFileSync(path.join(dir, 'runtime', 'niubash', 'manifest.json'))
+      const stagedGood = readFileSync(path.join(dir, 'runtime', 'niubash', ASSET_NAME))
+      const consistent = runStage(dir, { env: { NIUBASH_ARCHIVE: localArchive(dir, bytes) } })
+      check(`${label}: a consistent stage short-circuits without inspecting the new pointer (idempotence outranks)`,
+        consistent.status === 0 && consistent.stdout.includes('already staged')
+        && readFileSync(path.join(dir, 'runtime', 'niubash', 'manifest.json')).equals(manifestBefore)
+        && readFileSync(path.join(dir, 'runtime', 'niubash', ASSET_NAME)).equals(stagedGood),
+        `${consistent.status} — ${consistent.stdout}${consistent.stderr}`)
+
+      // Stage present but inconsistent (the suite's restaging shape): the
+      // short-circuit falls through and the bad archive reaches the
+      // inspector. The refusal must touch nothing that is already there.
+      const stagedPath = path.join(dir, 'runtime', 'niubash', ASSET_NAME)
+      const tampered = Buffer.from(readFileSync(stagedPath))
+      tampered[tampered.length - 1] ^= 0xff
+      writeFileSync(stagedPath, tampered)
+      const outcome = runStage(dir, { env: { NIUBASH_ARCHIVE: localArchive(dir, bytes) } })
+      check(`${label} is rejected with exit 1`, outcome.status === 1, `exit ${outcome.status} — ${outcome.stderr.slice(0, 200)}`)
+      check(`${label}: the refusal names the single-root requirement`,
+        outcome.stderr.includes('no single root directory'), outcome.stderr.slice(0, 300))
+      check(`${label}: the existing manifest is left byte-identical (never rewritten with a prefix:"" shape)`,
+        readFileSync(path.join(dir, 'runtime', 'niubash', 'manifest.json')).equals(manifestBefore),
+        'the staged manifest changed during a refused staging run')
+      check(`${label}: the existing staged archive survives byte-identical (no sweep, no overwrite)`,
+        readFileSync(stagedPath).equals(tampered),
+        'the staged archive changed during a refused staging run')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

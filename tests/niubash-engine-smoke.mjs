@@ -9,7 +9,13 @@
  *      recorded `bashProvisioned` suppressing the whole list;
  *   2. **buildNiubashProbeScript** — one cmd sweep, `manifest.json` AND the
  *      bash executable per candidate, `@@<root>` markers only, cmd builtins
- *      exclusively;
+ *      exclusively; the rung-3a hit→candidate match then judges each echoed
+ *      root by SUFFIX (`niubashPlacementOf` via `niubashCandidateOfHit`),
+ *      because cmd expands `%VAR%` while PARSING the probe line — a real
+ *      echo carries the CONCRETE root the `%USERPROFILE%` template candidate
+ *      can never equal (999f24f) — with sibling directories
+ *      (`\niubash-extra`, `\bash\<version>-old`) and unknown roots anchored
+ *      out;
  *   3. **the engine's presence cache** — `noteNiubashPresence` /
  *      `niubashPresenceOf` is the synchronous fact the injection gate reads;
  *      the project-placement bases come from the filesystem router's roots
@@ -93,8 +99,8 @@ writeFileSync(path.join(sandbox, 'node_modules', 'ssh2', 'package.json'), JSON.s
 writeFileSync(path.join(sandbox, 'node_modules', 'ssh2', 'index.cjs'), ssh2Stub)
 
 const winBash = await import(pathToFileURL(path.join(sandbox, 'lib', 'win-bash.js')).href)
-const { niubashCandidates, buildNiubashProbeScript, resolveWinBash } = winBash
-const { BASH_PAYLOAD_PIN, NIUBASH_RUNTIME_RELATIVE, resolvePayloadPin } = await import(pathToFileURL(path.join(sandbox, 'lib', 'bash-payload.js')).href)
+const { niubashCandidates, buildNiubashProbeScript, niubashPlacementOf, niubashCandidateOfHit, resolveWinBash } = winBash
+const { BASH_PAYLOAD_PIN, BASH_STORE_RELATIVE, NIUBASH_RUNTIME_RELATIVE, resolvePayloadPin } = await import(pathToFileURL(path.join(sandbox, 'lib', 'bash-payload.js')).href)
 const { SshWorkspaceEngine, windowsRemotePath } = await import(pathToFileURL(path.join(sandbox, 'lib', 'engine.js')).href)
 const { KINDS } = await import(pathToFileURL(path.join(sandbox, 'lib', 'diagnostics.js')).href)
 const { HostConfigStore } = await import(pathToFileURL(path.join(sandbox, 'lib', 'store.js')).href)
@@ -110,7 +116,15 @@ globalThis.fetch = (input) => {
 }
 
 const NIUBASH_USER_ROOT = `%USERPROFILE%\\${NIUBASH_RUNTIME_RELATIVE}`
-const NIUBASH_LEGACY_ROOT = `%USERPROFILE%\\.dsh-ssh-workspace\\bash\\${resolvePayloadPin().version}`
+const NIUBASH_LEGACY_ROOT = `%USERPROFILE%\\${BASH_STORE_RELATIVE}\\${resolvePayloadPin().version}`
+// What a real cmd.exe echoes back: %VAR% expands while cmd PARSES the probe
+// line, so a hit marker carries the CONCRETE root — never the template
+// spelling the candidate list was built with. Every probe-echo fake in this
+// suite uses these concrete spellings (a template-spelled echo could only
+// ever self-prove through the exact-match branch, which real cmd never
+// exercises for the user/legacy levels).
+const CONCRETE_USER_ROOT = `C:\\Users\\ao\\${NIUBASH_RUNTIME_RELATIVE}`
+const CONCRETE_LEGACY_ROOT = `C:\\Users\\ao\\${BASH_STORE_RELATIVE}\\${resolvePayloadPin().version}`
 
 /** Poll until the predicate holds (the kick is fire-and-forget by design). */
 async function until (predicate, { timeoutMs = 2000 } = {}) {
@@ -197,45 +211,147 @@ function probeEngine (steps) {
 
 const BASH_VERSION = 'GNU bash, version 5.2.26(1)-release (x86_64-pc-msys)\r\n'
 {
+  // The echo carries the CONCRETE root (cmd expands %VAR% while parsing the
+  // probe line), so this hit pairs with its candidate through the suffix
+  // judgment — the `%USERPROFILE%` spelling below is what the candidate list
+  // was built with, and equality against it could never match this echo.
   const { engine, calls, presence } = probeEngine([
-    { stdout: `@@${NIUBASH_USER_ROOT}\r\n` },
+    { stdout: `@@${CONCRETE_USER_ROOT}\r\n` },
     { stdout: BASH_VERSION },
   ])
   const bash = await resolveWinBash(engine, 'w', { entry: {} })
   const exeRelative = resolvePayloadPin().executableRelativePath.replaceAll('/', '\\')
-  check('a placement hit is verified by real execution before it is believed',
+  check('a concrete-echo placement hit is verified by real execution before it is believed',
     calls.length === 2 && calls[0].command.includes('if exist') && !calls[0].command.includes('where bash')
-    && calls[1].command.endsWith(`\\"${NIUBASH_USER_ROOT}\\${exeRelative}\\" --version`.replaceAll('\\"', '"')),
+    && calls[1].command.endsWith(`"${CONCRETE_USER_ROOT}\\${exeRelative}" --version`),
     JSON.stringify(calls.map(call => call.command)))
-  check('the verified placement answers as detected, with its PATH prefix',
-    bash?.source === 'detected' && bash.path === `${NIUBASH_USER_ROOT}\\${exeRelative}`
-    && bash.prefix === `set "PATH=${NIUBASH_USER_ROOT.replace(/[\\\\]+$/u, '')};${NIUBASH_USER_ROOT.replace(/[\\\\]+$/u, '')}\\winuxcmd\\usr\\bin;%PATH%" & `,
+  check('the verified placement answers as detected, with its PATH prefix built from the echoed CONCRETE root',
+    bash?.source === 'detected' && bash.path === `${CONCRETE_USER_ROOT}\\${exeRelative}`
+    && bash.prefix === `set "PATH=${CONCRETE_USER_ROOT};${CONCRETE_USER_ROOT}\\winuxcmd\\usr\\bin;%PATH%" & `,
     JSON.stringify(bash))
-  check('the probe-proven placement lands in the engine presence cache (the injection gate reads it)',
-    presence.length === 1 && presence[0].info.root === NIUBASH_USER_ROOT
+  check('the hit reached its candidate WITHOUT equality (echo ≠ the template root the candidate was built with)',
+    CONCRETE_USER_ROOT !== NIUBASH_USER_ROOT && bash !== undefined,
+    JSON.stringify({ echo: CONCRETE_USER_ROOT, candidate: NIUBASH_USER_ROOT }))
+  check('the probe-proven placement lands in the engine presence cache with the concrete root (the injection gate reads it)',
+    presence.length === 1 && presence[0].info.root === CONCRETE_USER_ROOT
     && presence[0].info.placement === 'user' && presence[0].info.source === 'probe'
     && presence[0].info.releaseTag === resolvePayloadPin().releaseTag && presence[0].info.version === BASH_VERSION.trim(),
     JSON.stringify(presence))
 }
 
 {
-  // NOTE (defect report, see the suite tail): on a real cmd.exe the %VAR% in
-  // the echo payload expands, so the marker carries the CONCRETE root — which
-  // the candidate match below (template vs concrete) can never pair. These
-  // assertions pin the designed template-spelled behavior; the expansion gap
-  // is reported to the implementer, not papered over.
+  // Both placement hits echo their concrete roots; each fails its own
+  // --version verification, so neither is cached or returned and resolution
+  // falls through to the well-known sweep.
   const { engine, calls, presence } = probeEngine([
-    { stdout: `@@${NIUBASH_USER_ROOT}\r\n@@${NIUBASH_LEGACY_ROOT}\r\n` },
+    { stdout: `@@${CONCRETE_USER_ROOT}\r\n@@${CONCRETE_LEGACY_ROOT}\r\n` },
     { stdout: '', success: false, exitCode: 1 },
     { stdout: '', success: false, exitCode: 1 },
     { stdout: '' },
   ])
   const bash = await resolveWinBash(engine, 'w', { entry: {} })
   check('a placement whose bash stops verifying is skipped, the next candidate gets its turn',
-    calls.length === 4 && calls[1].command.includes(`${NIUBASH_USER_ROOT}\\winuxcmd`)
-    && calls[2].command.includes('.dsh-ssh-workspace'),
+    calls.length === 4 && calls[1].command.includes(`${CONCRETE_USER_ROOT}\\winuxcmd`)
+    && calls[2].command.includes(CONCRETE_LEGACY_ROOT),
+    JSON.stringify(calls.map(call => call.command)))
+  check('the failed verifications ran against the echoed CONCRETE roots (never a template spelling)',
+    calls[1].command.includes(CONCRETE_USER_ROOT) && !calls[1].command.includes('%USERPROFILE%')
+    && calls[2].command.includes(CONCRETE_LEGACY_ROOT) && !calls[2].command.includes('%USERPROFILE%'),
     JSON.stringify(calls.map(call => call.command)))
   check('no unverifiable candidate is cached or returned', presence.length === 0 && bash === undefined, JSON.stringify({ presence, bash }))
+}
+
+{
+  // The other two levels, each with the echo real cmd would produce:
+  //  - `legacy` — the concrete store root carrying the pinned version;
+  //  - `project` — the candidate roots are already concrete (built from the
+  //    mounted roots), so cmd echoes them verbatim and the match is the
+  //    designed exact branch (normalized key, not raw string equality).
+  const legacy = await (async () => {
+    const { engine, calls, presence } = probeEngine([
+      { stdout: `@@${CONCRETE_LEGACY_ROOT}\r\n` },
+      { stdout: BASH_VERSION },
+    ])
+    return { bash: await resolveWinBash(engine, 'w', { entry: {} }), calls, presence }
+  })()
+  const exeRelative = resolvePayloadPin().executableRelativePath.replaceAll('/', '\\')
+  check('a legacy-store hit is matched by its pinned-version tail and verified',
+    legacy.bash?.source === 'detected' && legacy.bash.path === `${CONCRETE_LEGACY_ROOT}\\${exeRelative}`
+    && legacy.calls.length === 2 && legacy.calls[1].command.includes(CONCRETE_LEGACY_ROOT),
+    JSON.stringify(legacy))
+  check('the legacy hit records presence with the concrete root and the legacy placement',
+    legacy.presence.length === 1 && legacy.presence[0].info.placement === 'legacy'
+    && legacy.presence[0].info.root === CONCRETE_LEGACY_ROOT && legacy.presence[0].info.root !== NIUBASH_LEGACY_ROOT,
+    JSON.stringify(legacy.presence))
+
+  const projectRoot = `D:\\repo\\${NIUBASH_RUNTIME_RELATIVE}`
+  const project = await (async () => {
+    const { engine, calls, presence } = probeEngine([
+      { stdout: `@@${projectRoot}\r\n` },
+      { stdout: BASH_VERSION },
+    ])
+    return { bash: await resolveWinBash(engine, 'w', { entry: {}, projectRoots: ['D:\\repo'] }), calls, presence }
+  })()
+  check('a project-placement hit (echo = the concrete candidate root) matches exactly and is verified',
+    project.bash?.source === 'detected' && project.bash.path === `${projectRoot}\\${exeRelative}`
+    && project.calls.length === 2 && project.calls[1].command.includes(projectRoot),
+    JSON.stringify(project))
+  check('the project hit records presence with the project placement',
+    project.presence.length === 1 && project.presence[0].info.placement === 'project'
+    && project.presence[0].info.root === projectRoot, JSON.stringify(project.presence))
+}
+
+{
+  // A concrete root that is NONE of the candidates and carries neither
+  // placement layout (it merely ends in `\niubash`, not the full user tail)
+  // is skipped: no verification, no presence — resolution falls to the
+  // well-known sweep.
+  const { engine, calls, presence } = probeEngine([
+    { stdout: '@@C:\\Users\\ao\\tools\\niubash\r\n' },
+    { stdout: '' },
+  ])
+  const bash = await resolveWinBash(engine, 'w', { entry: {} })
+  check('a concrete echo naming no probed placement is skipped without a verification',
+    calls.length === 2 && calls[1].command.includes('where bash')
+    && calls.every(call => !call.command.includes('C:\\Users\\ao\\tools')),
+    JSON.stringify(calls.map(call => call.command)))
+  check('the unknown root is neither cached nor returned', presence.length === 0 && bash === undefined, JSON.stringify({ presence, bash }))
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n[niubashPlacementOf / niubashCandidateOfHit: the suffix judgment and its boundaries]')
+
+{
+  const pinVersion = resolvePayloadPin().version
+  const candidates = niubashCandidates(undefined, ['D:\\repo'])
+  check('the concrete user layout judges as user', niubashPlacementOf(CONCRETE_USER_ROOT, pinVersion) === 'user')
+  check('separator, case and trailing-separator spellings normalize into the judgment',
+    niubashPlacementOf(`c:/users/ao/${NIUBASH_RUNTIME_RELATIVE.replaceAll('\\', '/')}/`, pinVersion) === 'user'
+    && niubashPlacementOf(CONCRETE_USER_ROOT.toUpperCase(), pinVersion) === 'user',
+    `forward-slash → ${niubashPlacementOf(`c:/users/ao/${NIUBASH_RUNTIME_RELATIVE.replaceAll('\\', '/')}/`, pinVersion)}, upper → ${niubashPlacementOf(CONCRETE_USER_ROOT.toUpperCase(), pinVersion)}`)
+  check('the concrete legacy layout judges as legacy', niubashPlacementOf(CONCRETE_LEGACY_ROOT, pinVersion) === 'legacy')
+  check('a legacy tail carrying a foreign version never judges as legacy',
+    niubashPlacementOf(`C:\\Users\\ao\\${BASH_STORE_RELATIVE}\\0.0.0-not-the-pin`, pinVersion) === undefined)
+  check('the niubash sibling directory is boundary-anchored (never judges as user)',
+    niubashPlacementOf(`${CONCRETE_USER_ROOT}-extra`, pinVersion) === undefined)
+  check('the version sibling directory is boundary-anchored (never judges as legacy)',
+    niubashPlacementOf(`${CONCRETE_LEGACY_ROOT}-old`, pinVersion) === undefined)
+  check('a bare trailing \\niubash without the .dsh layout judges as nothing',
+    niubashPlacementOf('C:\\tools\\niubash', pinVersion) === undefined)
+
+  check('candidateOfHit: the concrete user echo maps to the user candidate',
+    niubashCandidateOfHit(CONCRETE_USER_ROOT, candidates, pinVersion)?.placement === 'user')
+  check('candidateOfHit: the concrete legacy echo maps to the legacy candidate',
+    niubashCandidateOfHit(CONCRETE_LEGACY_ROOT, candidates, pinVersion)?.placement === 'legacy')
+  check('candidateOfHit: the project echo (already concrete) maps by the normalized exact key',
+    niubashCandidateOfHit(`d:/repo/${NIUBASH_RUNTIME_RELATIVE.replaceAll('\\', '/')}`, candidates, pinVersion)?.placement === 'project')
+  check('candidateOfHit: sibling and unknown concrete roots map to nothing',
+    niubashCandidateOfHit(`${CONCRETE_USER_ROOT}-extra`, candidates, pinVersion) === undefined
+    && niubashCandidateOfHit(`${CONCRETE_LEGACY_ROOT}-old`, candidates, pinVersion) === undefined
+    && niubashCandidateOfHit('C:\\nowhere\\at\\all', candidates, pinVersion) === undefined)
+  check('candidateOfHit: a judged placement with no candidate of that level maps to nothing',
+    niubashCandidateOfHit(CONCRETE_USER_ROOT, [], pinVersion) === undefined
+    && niubashCandidateOfHit(CONCRETE_LEGACY_ROOT, candidates.filter(candidate => candidate.placement !== 'legacy'), pinVersion) === undefined)
 }
 
 {
@@ -463,16 +579,6 @@ console.log('\n[store: the niubashAutoDeploy wish]')
     rmSync(home, { recursive: true, force: true })
   }
 }
-
-// ---------------------------------------------------------------------------
-console.log('\n[reported defect (documented here, not papered over)]')
-console.log(`  NOTE  the rung-3a hit→candidate match compares the template root
-        (%USERPROFILE%\\…) with whatever the probe echoed. On a real cmd.exe the
-        %VAR% inside the echo payload EXPANDS, so the marker carries the concrete
-        root and the exact match can never pair it with the template candidate —
-        the placement hit is skipped and resolution falls through to detection.
-        Same pattern in routes.js /niubash/status. Cannot be confirmed offline
-        (needs a real cmd), reported to the implementer with this suite.`)
 
 rmSync(sandbox, { recursive: true, force: true })
 

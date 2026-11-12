@@ -68,8 +68,15 @@ console.log('\n=== niubash routes smoke ===\n')
 const { makeRoutes, ROUTES } = await import(pathToFileURL(path.join(pluginRoot, 'lib/routes.js')).href)
 const { HostConfigStore } = await import(pathToFileURL(path.join(pluginRoot, 'lib/store.js')).href)
 const { HostStore } = await import(pathToFileURL(path.join(pluginRoot, 'lib/hosts.js')).href)
-const { BASH_PAYLOAD_PIN, NIUBASH_RUNTIME_RELATIVE } = await import(pathToFileURL(path.join(pluginRoot, 'lib/bash-payload.js')).href)
+const { BASH_PAYLOAD_PIN, NIUBASH_RUNTIME_RELATIVE, resolvePayloadPin } = await import(pathToFileURL(path.join(pluginRoot, 'lib/bash-payload.js')).href)
 const { SSH_WORKSPACE_GUIDANCE, niubashGuidanceSection } = await import(pathToFileURL(path.join(pluginRoot, 'lib/guidance.js')).href)
+
+// What a real cmd.exe echoes for the user level: %VAR% expands while cmd
+// PARSES the probe line, so the hit marker carries the CONCRETE root — the
+// `%USERPROFILE%` template spelling the candidate list was built with can
+// never equal it, and the route must recognize the hit through the same
+// suffix judgment resolveWinBash uses (999f24f).
+const CONCRETE_USER_ROOT = `C:\\Users\\ao\\${NIUBASH_RUNTIME_RELATIVE}`
 
 // No real network anywhere in this suite.
 const fetchAttempts = []
@@ -207,22 +214,36 @@ console.log('[GET /niubash/status: the record answers, the bare host probes]')
 }
 
 {
+  // The echo spells the CONCRETE root cmd expanded (never the template the
+  // candidate was built with), so the hit must be matched into the sweep's
+  // three-level candidates through the suffix judgment — a template-vs-
+  // concrete equality would silently skip it and answer not-initialized.
   const engine = routeEngine({ steps: [
-    { stdout: `@@%USERPROFILE%\\${NIUBASH_RUNTIME_RELATIVE}\r\n` },
+    { stdout: `@@${CONCRETE_USER_ROOT}\r\n` },
     { stdout: 'GNU bash, version 5.2.26(1)-release (x86_64-pc-msys)\r\n' },
   ] })
   const routes = routesOf(engine)
   const status = routes.find(route => route.path === ROUTES.niubashStatus)
   const reply = await callJson(status, { method: 'GET', url: `${ROUTES.niubashStatus}?alias=win-bare`, headers: { host: 'localhost:4074' } })
+  const sweep = engine.execCalls[0]?.command ?? ''
   check('a bare host pays exactly one sweep plus one --version',
     reply.body.initialized === true && engine.execCalls.length === 2
-    && engine.execCalls[0].command.includes('manifest.json') && !engine.execCalls[0].command.includes('where bash')
+    && sweep.includes('manifest.json') && !sweep.includes('where bash')
     && engine.execCalls[1].command.includes('--version'), JSON.stringify(engine.execCalls.map(call => call.command)))
-  check('the probed placement travels with its facts',
-    reply.body.probed?.placement === 'user' && reply.body.probed?.root === `%USERPROFILE%\\${NIUBASH_RUNTIME_RELATIVE}`
-    && reply.body.probed?.releaseTag === BASH_PAYLOAD_PIN.releaseTag && reply.body.probe.found === true, JSON.stringify(reply.body))
-  check('the probe-proven runtime feeds the engine presence cache',
-    engine.presence.get('win-bare')?.source === 'probe' && engine.presence.get('win-bare')?.placement === 'user')
+  check('the sweep offered all three levels (project, user, legacy) for this host',
+    sweep.includes(`if exist "D:\\other\\${NIUBASH_RUNTIME_RELATIVE}\\manifest.json"`)
+    && sweep.includes(`if exist "%USERPROFILE%\\${NIUBASH_RUNTIME_RELATIVE}\\manifest.json"`)
+    && sweep.includes(`if exist "%USERPROFILE%\\.dsh-ssh-workspace\\bash\\${BASH_PAYLOAD_PIN.version}\\manifest.json"`), sweep)
+  check('the concrete hit line is matched into the sweep\'s three-level candidates (placement recognized, never by template equality)',
+    reply.body.probe.found === true && reply.body.probed?.placement === 'user'
+    && reply.body.probed?.root === CONCRETE_USER_ROOT
+    && reply.body.probed?.root !== `%USERPROFILE%\\${NIUBASH_RUNTIME_RELATIVE}`
+    && reply.body.probed?.path === `${CONCRETE_USER_ROOT}\\${resolvePayloadPin().executableRelativePath.replaceAll('/', '\\')}`
+    && reply.body.probed?.releaseTag === BASH_PAYLOAD_PIN.releaseTag,
+    JSON.stringify(reply.body))
+  check('the probe-proven runtime feeds the engine presence cache with the concrete root',
+    engine.presence.get('win-bare')?.source === 'probe' && engine.presence.get('win-bare')?.placement === 'user'
+    && engine.presence.get('win-bare')?.root === CONCRETE_USER_ROOT, JSON.stringify([...engine.presence]))
 }
 
 {
