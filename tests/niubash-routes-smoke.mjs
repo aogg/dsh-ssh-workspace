@@ -17,9 +17,10 @@
  *      rides through to the provisioner (the receipt stat names the
  *      `%USERPROFILE%` root); an ABSENT (or blank) placement defaults to
  *      'user' the same way (33515e5 — the dialog's and docs' default), a
- *      present-but-unknown value still answers 400; a browser abort
- *      (`req → close`) reaches the provisioner as an AbortSignal and writes
- *      NOTHING to the socket;
+ *      present-but-unknown value still answers 400, and a PRESENT non-string
+ *      (123 / {} / null / true) answers its own 400 naming the offending
+ *      value instead of silently taking the default (9377717); a browser
+ *      abort (`req → close`) reaches the
  *   3. **the injected-content page** shows exactly what the model sees — the
  *      announcement verbatim, one row per Windows-type host plus any host
  *      with a record (a mac host without one is absent), hit rows carrying
@@ -306,6 +307,20 @@ console.log('\n[POST /niubash/init: validation, placement, cancellation]')
   const upperPlacement = await callJson(init, { body: { alias: 'win-bare', placement: 'USER' } })
   check('a present-but-unknown placement answers 400 even case-shifted (the trim only normalizes blanks, not case)',
     upperPlacement.status === 400 && upperPlacement.body.error.includes('project, user, custom'), upperPlacement.raw)
+
+  // The 9377717 tightening: a PRESENT placement must be a string. The old
+  // `typeof === 'string' ? trim : ''` ternary let a number, an object, null,
+  // or a boolean fall through the blank → 'user' default SILENTLY; each
+  // shape now answers its own 400 whose message names the offending value
+  // (a regression would fall back to the default and reach the provisioner
+  // as a 200 ok:false instead).
+  const nonStringPlacements = [[123, '123'], [{}, '{}'], [null, 'null'], [true, 'true']]
+  for (const [value, spelling] of nonStringPlacements) {
+    const reply = await callJson(init, { body: { alias: 'win-bare', placement: value } })
+    check(`a non-string placement (${spelling}) answers 400 naming the type, never the user default`,
+      reply.status === 400 && reply.body.error.includes('is not a string')
+      && reply.body.error.includes(spelling), reply.raw)
+  }
 }
 
 // ---------------------------------------------------------------------------
