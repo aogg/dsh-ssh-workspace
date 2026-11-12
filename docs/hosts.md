@@ -39,14 +39,16 @@
 | `defaultPath` | 可选字符串。面板「新建远程工作区」在该主机上浏览目录的**初始位置**（编辑器里的「新增工作区默认目录」），缺省 / 留空则打开 SSH 登录目录，字段不落盘。可在面板里浏览选定：新建工作区时勾选「设为本主机默认目录」，或在主机编辑器里用「选择…」按钮。保存时规范化：`\` 折算为 `/`、盘符路径补前导 `/`（`D:/code` → `/D:/code`）、折叠连续 `/`、除根 `/` 与裸盘符根（规范化为 `/D:/`）外去掉尾部 `/`；规范化后不是绝对路径的值会被拒绝（400）。示例：`/home/user` 或 `/D:/code/www` |
 | `proxyJump` | 非空时解析明确拒绝（见下） |
 | `bashProvisioned` | 可选对象，**由初始化流程写入**（面板的「初始化 Niubash」弹窗或 `ssh_workspace_bash action=provision`，经 `mutateHosts`），编辑器不碰：`{ path, root, version, sha256, provisionedAt, releaseTag?, placement? }` 记录部署到该主机的钉版 bash 载荷（可执行文件路径、部署树根、版本、归档 sha256、时间；`releaseTag` 是 niubash 的 GitHub release tag，`placement` 是放置方式 `project` / `user` / `custom` / `legacy`——老版本写入的记录没有这两个字段，**缺省不影响记录的可信度**）。它是 bash 解析的第二优先级，让部署在重启后仍然生效；形状损坏的记录按「未部署」降级（引擎回落到探测 / cmd），面板删除主机时随之消失 |
+| `niubashAutoDeploy` | 可选布尔，**win 主机专用**。开启后，保存条目时（以及该主机每次**新连接建立**时）若尚无 `bashProvisioned` 记录，插件会在**后台**自动部署一次 Niubash 载荷到默认目标 `<用户目录>\.dsh\runtimes\plugins\dsh-ssh-workspace\niubash\`（`placement: 'user'`；条目已记录目标时以记录为准、不再重复部署）——HTTP 响应与挂载流程**都不等待**它，结果经既有诊断日志、引擎 presence 缓存与「初始化 Niubash」弹窗的状态查询可见。**一次连接至多一次**：失败记诊断、不重试风暴，下次新连接可再补一次，或由用户在弹窗手动初始化。缺省 = 关闭（不落盘 `false`）；编辑器以复选框呈现（新建主机默认勾选、已有主机回显存储值、已初始化置灰），勾掉即删除该字段。详见下节「Niubash 三级加载路径与初始化」 |
 | `createdAt` / `updatedAt` | 时间戳 |
 
-`agentForward` / `compress` / `aliasTag` / `os` / `bashPath` 都是**可选字段**：
-缺省等于既有默认（开关关闭、操作系统按连接探测、bash 走探测），所以老版本写入的
-条目与新版本字节级兼容。面板的主机编辑器里 `agentForward` / `compress` /
-`aliasTag` 以复选框呈现，勾掉即从文件中删除该字段，不会残留 `false`；`os` 以下拉
-呈现，选「自动」保存即删除该字段；`bashPath` 在选了 Windows 时出现（输入框），留空
-保存即删除该字段。
+`agentForward` / `compress` / `aliasTag` / `os` / `bashPath` /
+`niubashAutoDeploy` 都是**可选字段**：缺省等于既有默认（开关关闭、操作系统按
+连接探测、bash 走探测、不自动部署），所以老版本写入的条目与新版本字节级兼容。
+面板的主机编辑器里 `agentForward` / `compress` / `aliasTag` /
+`niubashAutoDeploy` 以复选框呈现，勾掉即从文件中删除该字段，不会残留
+`false`；`os` 以下拉呈现，选「自动」保存即删除该字段；`bashPath` 在选了
+Windows 时出现（输入框），留空保存即删除该字段。
 
 `agentForward` 是**逐通道**生效的：ssh2 的转发请求只能挂在 exec / shell 通道上，
 连接级同名字段会把整条连接（含只读 SFTP）都卷进来，本插件不使用它。转发的
@@ -167,6 +169,30 @@ Windows 类型主机上的 Niubash（插件自备的 POSIX Bash 运行时）有*
 初始化成功的记录（路径 / 版本 / 时间 / 来源）写入 `bashProvisioned`，同时
 作为「Niubash 已初始化」事实进入系统提示词注入的门控判定（见
 [features.md](./features.md) 的「Niubash 状态门控注入」）。
+
+### 自动部署（`niubashAutoDeploy`）
+
+主机编辑器在选了 **Windows** 时出现「自动部署 Niubash」复选框（存储字段
+`niubashAutoDeploy`）：新建主机**默认勾选**，编辑已有主机回显存储值（条目里
+没有该字段的旧主机默认不勾——一次普通保存绝不会给存量主机凭空部署），已初始化
+（有 `bashProvisioned` 记录）的主机置灰并注明「已初始化」。复选框下方的小字说明
+默认部署目标 `<用户目录>\.dsh\runtimes\plugins\dsh-ssh-workspace\niubash\`；
+**编辑器里不放路径输入**，要换放置路径（项目 / 用户 / 自定义）走「初始化
+Niubash」弹窗——目标只有一个地方可改，不出现两个会互相矛盾的面板。
+
+触发有**两处**，都走引擎同一个入口、共享同一把 in-flight 守卫（同主机至多一个
+部署在跑），并且**绝不阻塞**请求或连接：
+
+- **保存时**：`hosts/save` 写入条目后，若 `os === 'win'` 且勾选且尚无部署记录，
+  后台发起一次部署（默认目标为用户目录）；HTTP 响应照常返回，不等它；
+- **挂载时**：该主机每次**新连接建立**后同样条件满足时再补一次——这是保存时
+  主机不可达的补偿重试。每次连接至多一次，失败记入诊断日志（`degraded`），不
+  做重试风暴；状态由「初始化 Niubash」弹窗的状态查询展示，用户可手动重试。
+
+放置目标的解析顺序：条目已记录目标优先（有记录就不再触发——记录指向的部署已经
+存在，自动部署绝不在它旁边再部署第二棵树）；否则用户目录默认。部署成功后与
+手动初始化走完全相同的链路：写入 `bashProvisioned` 记录、更新引擎 presence
+缓存、下一个模型步即注入「Niubash 已初始化」段。
 
 ## 不支持的连接方式
 
