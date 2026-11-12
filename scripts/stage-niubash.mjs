@@ -27,7 +27,11 @@
  * - SINGLE ROOT: an archive whose members share no single top-level
  *   directory (root-level files, or several distinct top-level roots) is
  *   rejected outright — staging it would write a `prefix: ""` manifest the
- *   runtime never trusts, dead weight the package ships forever.
+ *   runtime never trusts, dead weight the package ships forever. The
+ *   common-root discovery runs on ustar-joined member paths ({@link
+ *   tarMemberName}): the official v1.5.0 asset splits 7 of its 194 member
+ *   paths into `prefix` + `name` header fields, and joining them before the
+ *   walk is what yields the single `niubash-v1.5.0-win-x64/` root.
  *
  * The tar walk here is DESCRIPTIVE (it discovers `prefix` and the bash
  * executable's relative path and digest so the manifest can freeze them).
@@ -334,7 +338,10 @@ function inspectArchive (file) {
     // stored without one — the common-prefix walk below uses the DIRECTORY
     // path either way, and a root-directory member (`root/`, no interior
     // slash after its own name) must still contribute `root/`, not `''`.
-    const headerName = header.subarray(0, 100).toString('utf8').replace(/\0.*$/su, '')
+    // tarMemberName joins the ustar prefix split first, so a member stored
+    // as `prefix`=root + `name`=tail (7 members in the official v1.5.0
+    // asset) reads as its real full path instead of a root-less tail.
+    const headerName = tarMemberName(header)
     const name = headerName.replace(/\/+$/u, '')
     const size = tarOctal(header, 124, 136)
     const type = header.subarray(156, 157).toString('utf8').replace(/\0.*$/su, '') || '0'
@@ -417,6 +424,38 @@ function tarOctal (header, start, end) {
 }
 
 /**
+ * The full member name of one tar header, joining the ustar `prefix` split
+ * back onto the 100-byte `name` field — the local twin of the runtime
+ * parser's `tarMemberName` (this script cannot import lib/bash-payload.js,
+ * see the module doc). Trailing slashes are KEPT: directory members are
+ * stored with one (`root/`) and the common-prefix walk below derives the
+ * member's directory from this exact spelling.
+ *
+ * ustar (POSIX.1-1988) spells paths longer than 100 bytes as TWO header
+ * fields: `name` (offset 0, 100 bytes) holds the tail and `prefix` (offset
+ * 345, 155 bytes) holds the leading directories; the real path is
+ * `prefix + '/' + name`. Reading `name` alone misreads every split member as
+ * a root-less path, which collapsed the common-root discovery to `''` and
+ * tripped the single-root rejection below. Real-world evidence: the official
+ * niubash v1.5.0 win-x64 asset (sha256 `da28cdc4…`, byte-verified) packs
+ * exactly this way — 7 of its 194 members split, all
+ * `winuxcmd/opt/niugit/mingw64/share/git-core/templates/hooks/*` files whose
+ * `prefix` field carries the `niubash-v1.5.0-win-x64` root. A member stored
+ * entirely in `name` (empty `prefix`, the other 187) joins to itself, so the
+ * join changes nothing for short paths. NUL and surrounding whitespace are
+ * stripped from the prefix field, mirroring {@link tarOctal}.
+ *
+ * @param {Buffer} header - the 512-byte header block.
+ * @returns {string} the joined member name (trailing slash kept when the
+ *   header stored one).
+ */
+function tarMemberName (header) {
+  const name = header.subarray(0, 100).toString('utf8').replace(/\0.*$/su, '')
+  const prefix = header.subarray(345, 500).toString('utf8').replace(/\0.*$/su, '').trim()
+  return prefix !== '' ? `${prefix}/${name}` : name
+}
+
+/**
  * The longest leading directory two path prefixes share, boundary-aligned.
  *
  * @param {string} a - one directory prefix, trailing slash included.
@@ -451,7 +490,11 @@ function verifyArchiveLikeRuntime (file, shape) {
   while (offset + 512 <= tar.length) {
     const header = tar.subarray(offset, offset + 512)
     if (header.every(byte => byte === 0)) break
-    const rawName = header.subarray(0, 100).toString('utf8').replace(/\0.*$/su, '').replace(/\/+$/u, '')
+    // tarMemberName joins the ustar prefix split (7 members of the official
+    // v1.5.0 asset) BEFORE the pinned-root check below, mirroring
+    // readBashTarGz: without the join the split members read as root-less
+    // tails and fail the prefix guard.
+    const rawName = tarMemberName(header).replace(/\/+$/u, '')
     const size = tarOctal(header, 124, 136)
     const type = header.subarray(156, 157).toString('utf8').replace(/\0.*$/su, '') || '0'
     if (offset + 512 + size > tar.length) throw new Error(`bash payload tar member truncated: ${JSON.stringify(rawName)}`)

@@ -162,9 +162,10 @@ Windows 类型主机上的 Niubash（插件自备的 POSIX Bash 运行时）有*
   （存在 + 实测），顺带返回本进程信任的载荷 pin（包内暂存 manifest 派生或
   内置 fallback）与可用的项目放置候选；
 - `POST /api/dsh-ssh-workspace/niubash/init` —— 发起部署：`{ alias,
-  placement: 'project'|'user'|'custom', projectPath?, customRoot?, force? }`，
-  复用 `provisionWinBash` 部署器（目标根由放置路径决定）；浏览器取消 fetch
-  会 abort 整个部署（同一 AbortSignal 一路传进引擎）。
+  placement?: 'project'|'user'|'custom', projectPath?, customRoot?, force? }`，
+  placement 可缺省，缺省（或空白）即 `'user'`（用户目录，与弹窗默认一致），
+  非法值照旧 400；复用 `provisionWinBash` 部署器（目标根由放置路径决定）；
+  浏览器取消 fetch 会 abort 整个部署（同一 AbortSignal 一路传进引擎）。
 
 初始化成功的记录（路径 / 版本 / 时间 / 来源）写入 `bashProvisioned`，同时
 作为「Niubash 已初始化」事实进入系统提示词注入的门控判定（见
