@@ -23,6 +23,13 @@
  *    line), and the capability probe (`where` on cmd hosts, `command -v` on
  *    POSIX ones).
  *
+ * 4. **The win-bash resolution probes** (2107b81): the login-shell fact gates
+ *    everything, so a POSIX-login host pays exactly ONE probe (`%COMSPEC%`)
+ *    and never sees the cmd-syntax bash sweep, while a cmd-login host pays a
+ *    second, bash-candidate probe (`if exist …` + `where bash`) before its
+ *    command dialect settles. Every scripted step list below spells those
+ *    probes out, so a silent change in the probe order breaks loudly here.
+ *
  * Run: node tests/dialect-smoke.mjs
  */
 
@@ -30,6 +37,19 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+
+// patch-subprocess.js reaches the shared SFTP primitives, which resolve the
+// DSH peer packages; without an assembled (or generated stub) tree there is
+// nothing to resolve against and the import below would crash the suite. The
+// engine/shell halves stay peer-free, but the suite imports them together.
+const coreRoot = process.env.DSH_CORE_ROOT
+if (!coreRoot) {
+  console.log('\n=== dialect smoke ===\n')
+  console.log('  SKIP  DSH_CORE_ROOT is not set (patch-subprocess.js needs @deepseek-ai/dsh-fs)')
+  console.log('\n=== 0 passed, 0 failed, 1 suite skipped ===')
+  process.exit(0)
+}
+process.env.DSH_PEER_ROOT = [coreRoot, process.env.DSH_PEER_ROOT].filter(Boolean).join(path.delimiter)
 
 const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const { SshWorkspaceEngine } = await import(pathToFileURL(path.join(pluginRoot, 'lib/engine.js')).href)
@@ -125,19 +145,31 @@ console.log('\n=== dialect smoke ===\n')
 
 // --- 737b096: the exec options bag is always an object ----------------------
 {
-  const { engine, calls, record } = dialectHarness('plain', [{ stdout: 'hi\n', code: 0 }, { stdout: 'hi\n', code: 0 }])
+  // An UNPINNED host pays one `echo %COMSPEC%` login probe before its first
+  // command (the login-shell gate of the bash resolution, 2107b81). This
+  // scripted answer is a POSIX spelling, so the resolution ends right there —
+  // no bash-candidate probe follows, and the command rides the login shell.
+  const { engine, calls, record } = dialectHarness('plain', [
+    { stdout: 'hi\n', code: 0 },
+    { stdout: 'hi\n', code: 0 },
+    { stdout: 'hi\n', code: 0 },
+  ])
   try {
     const outcome = await engine.exec('plain', 'echo hi')
-    check('a plain exec reaches the client exactly once', calls.length === 1, String(calls.length))
+    check('an unpinned host pays exactly one login probe, then the command reaches the client',
+      calls.length === 2 && calls[0].command === 'echo %COMSPEC%' && calls[1].command === 'echo hi',
+      JSON.stringify(calls.map(call => call.command)))
     check('a non-forwarding exec passes an EMPTY options object, not undefined',
-      calls[0].options !== undefined && typeof calls[0].options === 'object' && JSON.stringify(calls[0].options) === '{}',
-      String(calls[0].options))
+      calls[1].options !== undefined && typeof calls[1].options === 'object' && JSON.stringify(calls[1].options) === '{}',
+      String(calls[1].options))
     check('the command still runs to completion', outcome.success === true && outcome.stdout === 'hi\n', JSON.stringify(outcome))
 
     record.agentForward = true
     await engine.exec('plain', 'echo hi')
     check('a forwarding exec passes exactly the channel flag',
-      JSON.stringify(calls[1].options) === JSON.stringify({ agentForward: true }), JSON.stringify(calls[1].options))
+      JSON.stringify(calls[2].options) === JSON.stringify({ agentForward: true }), JSON.stringify(calls[2].options))
+    check('a posix answer short-circuits the bash resolution (no second probe for later execs)',
+      calls.length === 3 && !calls.some(call => call.command.includes('if exist')), JSON.stringify(calls.map(call => call.command)))
   } finally {
     engine.dispose()
   }
@@ -145,11 +177,21 @@ console.log('\n=== dialect smoke ===\n')
 
 // --- dd75ab6: remoteDialect probes %COMSPEC% and caches the answer ----------
 {
-  const { engine, calls } = dialectHarness('win', [{ stdout: 'C:\\Windows\\system32\\cmd.exe\r\n', code: 0 }])
+  // A cmd answer is no longer final (2107b81): the win-bash resolution sweeps
+  // the well-known bash locations with one cmd-syntax probe before the
+  // command dialect settles. The empty answer below means "no bash", so the
+  // dialect stays the historical cmd.
+  const { engine, calls } = dialectHarness('win', [
+    { stdout: 'C:\\Windows\\system32\\cmd.exe\r\n', code: 0 },
+    { stdout: '', code: 0 },
+  ])
   try {
     const dialect = await engine.remoteDialect('win')
     check('an expanded COMSPEC path answers cmd', dialect === 'cmd', dialect)
     check('the probe asks the login shell to expand %COMSPEC%', calls[0]?.command === 'echo %COMSPEC%', calls[0]?.command)
+    check('a cmd answer pays exactly one more probe: the bash-candidate sweep',
+      calls.length === 2 && calls[1].command.includes('if exist') && calls[1].command.includes('where bash'),
+      JSON.stringify(calls.map(call => call.command)))
   } finally {
     engine.dispose()
   }
@@ -184,13 +226,18 @@ console.log('\n=== dialect smoke ===\n')
 }
 
 {
-  const { engine, calls } = dialectHarness('cached', [{ stdout: 'C:\\Windows\\system32\\cmd.exe\r\n', code: 0 }])
+  const { engine, calls } = dialectHarness('cached', [
+    { stdout: 'C:\\Windows\\system32\\cmd.exe\r\n', code: 0 },
+    { stdout: '', code: 0 },
+  ])
   try {
     const first = await engine.remoteDialect('cached')
     const second = await engine.remoteDialect('cached')
     check('a second call on the same connection answers from the cache', first === 'cmd' && second === 'cmd',
       `${first}/${second}`)
-    check('a second call sends no second probe command', calls.length === 1, String(calls.length))
+    check('the whole dialect costs exactly two probes: login, then the bash sweep',
+      calls.length === 2 && calls[0].command === 'echo %COMSPEC%' && calls[1].command.includes('where bash'),
+      JSON.stringify(calls.map(call => call.command)))
   } finally {
     engine.dispose()
   }
@@ -199,19 +246,28 @@ console.log('\n=== dialect smoke ===\n')
 {
   // The answer dies with the record: close it, pool a fresh record whose
   // login shell answers literally, and the next call must re-probe (and
-  // believe the NEW answer).
+  // believe the NEW answer). The posix side of the reconnect is the
+  // f698ae0 contract at the dialect level: a posix login shell pays ONLY the
+  // login probe — the cmd-syntax bash sweep must never reach it.
   const engine = new SshWorkspaceEngine({ store: HERMETIC_STORE })
   try {
-    const first = execScriptedClient([{ stdout: 'C:\\Windows\\system32\\cmd.exe\r\n', code: 0 }])
+    const first = execScriptedClient([
+      { stdout: 'C:\\Windows\\system32\\cmd.exe\r\n', code: 0 },
+      { stdout: '', code: 0 },
+    ])
     engine.pool.set('rehomed', pooledRecord('rehomed', first.client))
-    check('the first connection answers cmd from its probe', await engine.remoteDialect('rehomed') === 'cmd' && first.calls.length === 1)
+    check('the first connection answers cmd from its probes',
+      await engine.remoteDialect('rehomed') === 'cmd' && first.calls.length === 2)
     engine.closeRecord('rehomed', engine.pool.get('rehomed'))
     const reconnected = execScriptedClient([{ stdout: '%COMSPEC%\r\n', code: 0 }])
     engine.pool.set('rehomed', pooledRecord('rehomed', reconnected.client))
     const dialect = await engine.remoteDialect('rehomed')
     check('a reconnect probes again instead of trusting the old record',
-      dialect === 'posix' && reconnected.calls.length === 1 && first.calls.length === 1,
+      dialect === 'posix' && reconnected.calls.length === 1 && first.calls.length === 2,
       `dialect=${dialect} firstProbes=${first.calls.length} newProbes=${reconnected.calls.length}`)
+    check('a posix answer costs one probe and no bash sweep ever fires',
+      reconnected.calls.length === 1 && reconnected.calls[0].command === 'echo %COMSPEC%',
+      `probes=${JSON.stringify(reconnected.calls.map(call => call.command))}`)
   } finally {
     engine.dispose()
   }
@@ -219,18 +275,25 @@ console.log('\n=== dialect smoke ===\n')
 
 // --- dd75ab6: the capability probe speaks the host's dialect too ------------
 {
+  // On a cmd host WITHOUT bash the probe order is: %COMSPEC% login probe,
+  // bash-candidate sweep (answers nothing here), then the `where` capability
+  // script — calls[2] is the capability script.
   const { engine, calls } = dialectHarness('wintools', [
     { stdout: 'C:\\Windows\\system32\\cmd.exe\r\n', code: 0 },
+    { stdout: '', code: 0 },
     { stdout: 'rg\r\ngit\r\ndsh-probe-done\r\n', code: 0 },
   ])
   try {
     const result = await engine.probeCapabilities('wintools')
-    const script = calls[1]?.command ?? ''
+    const script = calls[2]?.command ?? ''
     check('a cmd host checks presence with where', script.includes('where rg') && script.includes('where git') && script.includes('where inotifywait'), script)
     check('the cmd probe does not use POSIX command -v', !script.includes('command -v'), script)
     check('the cmd probe joins its checks with &, not ;', script.includes(' & ') && !script.includes('; '), script)
     check('the probed capabilities read back truthfully',
       result.rg === true && result.git === true && result.inotifywait === false, JSON.stringify(result))
+    check('the probe order is login, bash sweep, then capabilities',
+      calls.length === 3 && calls[0].command === 'echo %COMSPEC%' && calls[1].command.includes('if exist'),
+      JSON.stringify(calls.map(call => call.command.slice(0, 40))))
   } finally {
     engine.dispose()
   }

@@ -15,8 +15,12 @@
  *   2. the editor always posts the key, so the "auto" choice (a blank value)
  *      DROPS the stored entry while an absent key (an older client) KEEPS it —
  *      the same blank/absent split `defaultPath` already obeys;
- *   3. `remoteDialect` answers a pinned OS without sending any probe command;
- *      only an unpinned entry reaches the `%COMSPEC%` probe.
+ *   3. `remoteDialect` answers a pinned OS without the LOGIN probe: `mac` /
+ *      `linux` send nothing at all, while a pinned `win` never reaches the
+ *      `%COMSPEC%` probe but pays exactly one bash-candidate probe (the
+ *      win-bash resolution, 2107b81) — answering `posix` when a bash proves
+ *      itself and the historical `cmd` when none does. Only an UNPINNED
+ *      entry reaches the `%COMSPEC%` probe.
  *
  * The pure half (normalization + store + rows) runs on a bare checkout; the
  * route half needs the peer tree (routes.js imports remote-fs.js).
@@ -188,7 +192,7 @@ console.log('\n[rows: the field reaches the agent-facing surface]')
 }
 
 // ---------------------------------------------------------------------------
-console.log('\n[engine: a pinned OS answers without probing]')
+console.log('\n[engine: a pinned OS answers without the login probe]')
 
 // The same doubles dialect-smoke uses; repeated here so this suite stays
 // self-contained (the pinned-OS branch lives in engine.js, not shell.js).
@@ -248,11 +252,38 @@ async function osHarness (alias, entryExtra, steps) {
 }
 
 {
-  const { engine, calls, cleanup } = await osHarness('pinned-win', { os: 'win' }, [])
+  // A pinned win answers its LOGIN dialect (cmd) without the %COMSPEC%
+  // probe, but the win-bash resolution still sweeps the well-known bash
+  // locations — exactly one cmd-syntax probe, and `cmd` only because this
+  // answer carries no bash. (Before the win-bash feature a pinned win sent
+  // nothing at all; that assertion is what changed with 2107b81.)
+  const { engine, calls, cleanup } = await osHarness('pinned-win', { os: 'win' }, [{ stdout: '', code: 0 }])
   try {
     const dialect = await engine.remoteDialect('pinned-win')
-    check('a pinned win answers cmd', dialect === 'cmd', String(dialect))
-    check('a pinned win sends NO probe command', calls.length === 0, JSON.stringify(calls))
+    check('a pinned win answers cmd when no bash answers', dialect === 'cmd', String(dialect))
+    check('a pinned win never sends the %COMSPEC% login probe',
+      !calls.some(call => call.command === 'echo %COMSPEC%'), JSON.stringify(calls.map(call => call.command)))
+    check('a pinned win pays exactly one bash-candidate probe',
+      calls.length === 1 && calls[0].command.includes('if exist') && calls[0].command.includes('where bash'),
+      JSON.stringify(calls.map(call => call.command)))
+  } finally { cleanup() }
+}
+
+{
+  // The same pinned win with Git Bash installed: the sweep names one
+  // candidate, the candidate proves itself by RUNNING, and the command
+  // dialect flips to posix — the pinned-os contract plus the win-bash
+  // dispatch in one breath.
+  const { engine, calls, cleanup } = await osHarness('pinned-win-git', { os: 'win' }, [
+    { stdout: 'C:\\Program Files\\Git\\bin\\bash.exe\r\n', code: 0 },
+    { stdout: 'GNU bash, version 5.2.26(1)-release (x86_64-pc-msys)\r\n', code: 0 },
+  ])
+  try {
+    check('a pinned win with a verified bash answers posix', await engine.remoteDialect('pinned-win-git') === 'posix')
+    check('the candidate is verified by executing it, not by trusting the sweep line',
+      calls[1]?.command === '"C:\\Program Files\\Git\\bin\\bash.exe" --version', calls[1]?.command)
+    check('still no %COMSPEC% probe on the posix path',
+      !calls.some(call => call.command === 'echo %COMSPEC%'), JSON.stringify(calls.map(call => call.command)))
   } finally { cleanup() }
 }
 
