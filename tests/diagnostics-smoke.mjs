@@ -23,6 +23,14 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+// cd212c3 made engine.js load bash-payload.js → remote-fs.js at module load,
+// so the status-feed section below resolves the DSH peer packages at import
+// time. run.mjs generates a stub root when DSH_CORE_ROOT is unset; a bare
+// standalone run skips that one section instead of crashing.
+if (process.env.DSH_CORE_ROOT) {
+  process.env.DSH_PEER_ROOT = [process.env.DSH_CORE_ROOT, process.env.DSH_PEER_ROOT].filter(Boolean).join(path.delimiter)
+}
+const engineSectionReady = process.env.DSH_PEER_ROOT !== undefined
 const { Diagnostics, CAPACITY, KINDS } = await import(pathToFileURL(path.join(pluginRoot, 'lib', 'diagnostics.js')).href)
 
 let passed = 0
@@ -162,9 +170,12 @@ check(
 // So this drives the real engine and the real status feed end to end.
 console.log('\n[an obsolete workaround reaches the status surfaces]')
 
-{
-  const { SshWorkspaceEngine } = await import(pathToFileURL(path.join(pluginRoot, 'lib', 'engine.js')).href)
-  const engine = new SshWorkspaceEngine({})
+if (!engineSectionReady) {
+  console.log('  SKIP  the engine import now resolves the DSH peer tree (DSH_CORE_ROOT is not set)')
+} else {
+  {
+    const { SshWorkspaceEngine } = await import(pathToFileURL(path.join(pluginRoot, 'lib', 'engine.js')).href)
+    const engine = new SshWorkspaceEngine({})
 
   check('a fresh engine reports no workaround verdicts', engine.upstreamWorkarounds.length === 0)
 
@@ -198,6 +209,7 @@ console.log('\n[an obsolete workaround reaches the status surfaces]')
       typeof entry.detail === 'string' && Number.isInteger(entry.at)))
 
   engine.dispose()
+  }
 }
 
 // The status tool must SERVE the field, not just compute it. Asserted against

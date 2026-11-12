@@ -25,6 +25,18 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+// cd212c3 pulled bash-payload.js into engine.js's load chain (patch-terminal.js
+// imports engine.js), and bash-payload.js resolves the DSH peer packages (via
+// remote-fs.js) at module load; without an assembled (or generated stub) tree
+// there is nothing to resolve against.
+const coreRoot = process.env.DSH_CORE_ROOT
+if (!coreRoot) {
+  console.log('\n=== terminal smoke ===\n')
+  console.log('  SKIP  DSH_CORE_ROOT is not set (patch-terminal.js now loads the bash payload chain)')
+  console.log('\n=== 0 passed, 0 failed, 1 suite skipped ===')
+  process.exit(0)
+}
+process.env.DSH_PEER_ROOT = [coreRoot, process.env.DSH_PEER_ROOT].filter(Boolean).join(path.delimiter)
 const {
   RemoteTerminalRouter,
   installRemoteTerminal,

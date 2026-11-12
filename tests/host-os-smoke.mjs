@@ -17,10 +17,11 @@
  *      the same blank/absent split `defaultPath` already obeys;
  *   3. `remoteDialect` answers a pinned OS without the LOGIN probe: `mac` /
  *      `linux` send nothing at all, while a pinned `win` never reaches the
- *      `%COMSPEC%` probe but pays exactly one bash-candidate probe (the
- *      win-bash resolution, 2107b81) — answering `posix` when a bash proves
- *      itself and the historical `cmd` when none does. Only an UNPINNED
- *      entry reaches the `%COMSPEC%` probe.
+ *      `%COMSPEC%` probe but pays two bash-candidate probes (the win-bash
+ *      resolution: niubash placements, then the well-known sweep, cd212c3)
+ *      — answering `posix` when a bash proves itself and the historical
+ *      `cmd` when none does. Only an UNPINNED entry reaches the `%COMSPEC%`
+ *      probe.
  *
  * The pure half (normalization + store + rows) runs on a bare checkout; the
  * route half needs the peer tree (routes.js imports remote-fs.js).
@@ -34,6 +35,16 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+
+// cd212c3 pulled bash-payload.js into engine.js's load chain, so the dialect
+// half below (which imports engine.js) resolves the DSH peer packages at
+// module load — the same requirement the route half's guard already stated.
+// Set the peer root up front when a tree is available (run.mjs generates the
+// stub root); without one, the pure half still runs and the later halves
+// answer for themselves.
+if (process.env.DSH_CORE_ROOT) {
+  process.env.DSH_PEER_ROOT = [process.env.DSH_CORE_ROOT, process.env.DSH_PEER_ROOT].filter(Boolean).join(path.delimiter)
+}
 
 let passed = 0
 let failures = 0
@@ -253,35 +264,39 @@ async function osHarness (alias, entryExtra, steps) {
 
 {
   // A pinned win answers its LOGIN dialect (cmd) without the %COMSPEC%
-  // probe, but the win-bash resolution still sweeps the well-known bash
-  // locations — exactly one cmd-syntax probe, and `cmd` only because this
-  // answer carries no bash. (Before the win-bash feature a pinned win sent
+  // probe, but the win-bash resolution still sweeps the bash locations —
+  // two cmd-syntax probes since cd212c3 (the niubash three-level placement
+  // sweep, then the well-known sweep), and `cmd` only because neither
+  // answer carries a bash. (Before the win-bash feature a pinned win sent
   // nothing at all; that assertion is what changed with 2107b81.)
-  const { engine, calls, cleanup } = await osHarness('pinned-win', { os: 'win' }, [{ stdout: '', code: 0 }])
+  const { engine, calls, cleanup } = await osHarness('pinned-win', { os: 'win' }, [{ stdout: '', code: 0 }, { stdout: '', code: 0 }])
   try {
     const dialect = await engine.remoteDialect('pinned-win')
     check('a pinned win answers cmd when no bash answers', dialect === 'cmd', String(dialect))
     check('a pinned win never sends the %COMSPEC% login probe',
       !calls.some(call => call.command === 'echo %COMSPEC%'), JSON.stringify(calls.map(call => call.command)))
-    check('a pinned win pays exactly one bash-candidate probe',
-      calls.length === 1 && calls[0].command.includes('if exist') && calls[0].command.includes('where bash'),
+    check('a pinned win pays exactly two bash-candidate probes (niubash placements, then the sweep)',
+      calls.length === 2
+      && calls[0].command.includes('.dsh\\runtimes\\plugins') && !calls[0].command.includes('where bash')
+      && calls[1].command.includes('if exist') && calls[1].command.includes('where bash'),
       JSON.stringify(calls.map(call => call.command)))
   } finally { cleanup() }
 }
 
 {
-  // The same pinned win with Git Bash installed: the sweep names one
-  // candidate, the candidate proves itself by RUNNING, and the command
-  // dialect flips to posix — the pinned-os contract plus the win-bash
-  // dispatch in one breath.
+  // The same pinned win with Git Bash installed: the niubash sweep answers
+  // nothing, the well-known sweep names one candidate, the candidate proves
+  // itself by RUNNING, and the command dialect flips to posix — the
+  // pinned-os contract plus the win-bash dispatch in one breath.
   const { engine, calls, cleanup } = await osHarness('pinned-win-git', { os: 'win' }, [
+    { stdout: '', code: 0 },
     { stdout: 'C:\\Program Files\\Git\\bin\\bash.exe\r\n', code: 0 },
     { stdout: 'GNU bash, version 5.2.26(1)-release (x86_64-pc-msys)\r\n', code: 0 },
   ])
   try {
     check('a pinned win with a verified bash answers posix', await engine.remoteDialect('pinned-win-git') === 'posix')
     check('the candidate is verified by executing it, not by trusting the sweep line',
-      calls[1]?.command === '"C:\\Program Files\\Git\\bin\\bash.exe" --version', calls[1]?.command)
+      calls[2]?.command === '"C:\\Program Files\\Git\\bin\\bash.exe" --version', calls[2]?.command)
     check('still no %COMSPEC% probe on the posix path',
       !calls.some(call => call.command === 'echo %COMSPEC%'), JSON.stringify(calls.map(call => call.command)))
   } finally { cleanup() }

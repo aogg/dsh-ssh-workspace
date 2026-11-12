@@ -191,9 +191,11 @@ console.log('[engine: an unpinned POSIX host keeps its dialect and its raw execs
 console.log('\n[engine: a pinned win dispatches POSIX through its verified bash]')
 
 {
-  // Detected rung: the sweep names Git Bash, the candidate proves itself,
-  // and every later command dispatches through it.
+  // Detected rung (cd212c3 added the niubash placement sweep in front): the
+  // niubash sweep answers nothing, the well-known sweep names Git Bash, the
+  // candidate proves itself, and every later command dispatches through it.
   const { engine, calls, cleanup } = await engineHarness('pinnedwin', { os: 'win' }, [
+    { stdout: '', code: 0 },
     { stdout: `@@${BASH}\r\n`, code: 0 },
     BASH_VERSION,
     { stdout: 'hi\n', code: 0 },
@@ -201,22 +203,23 @@ console.log('\n[engine: a pinned win dispatches POSIX through its verified bash]
   ])
   try {
     check('a pinned win with a verified bash answers posix', await engine.remoteDialect('pinnedwin') === 'posix')
-    check('the cost was one sweep plus one --version (still no %COMSPEC% for a pinned win)',
-      calls.length === 2 && calls[0].command.includes('if exist') && calls[1].command === `"${BASH}" --version`,
+    check('the cost was two sweeps plus one --version (still no %COMSPEC% for a pinned win)',
+      calls.length === 3 && calls[0].command.includes('.dsh\\runtimes') && !calls[0].command.includes('where bash')
+      && calls[1].command.includes('where bash') && calls[2].command === `"${BASH}" --version`,
       JSON.stringify(calls.map(call => call.command)))
 
     const outcome = await engine.exec('pinnedwin', 'echo hi')
     check('the outer command is EXACTLY the bash launcher',
-      calls[2].command === `"${BASH}" -s`, JSON.stringify(calls.map(call => call.command)))
+      calls[3].command === `"${BASH}" -s`, JSON.stringify(calls.map(call => call.command)))
     check('the caller command reached bash over the channel stdin, and the stdin side ended',
-      calls[2].writes.join('') === 'echo hi\n' && calls[2].ended === true, JSON.stringify(calls[2]))
+      calls[3].writes.join('') === 'echo hi\n' && calls[3].ended === true, JSON.stringify(calls[3]))
     check('the command completed through the launcher', outcome.success === true && outcome.stdout === 'hi\n', JSON.stringify(outcome))
 
     await engine.exec('pinnedwin', 'echo hi', { cwd: '/D:/repo' })
     check('a cwd rides the stdin script in the drive-letter spelling bash resolves',
-      calls[3].writes.join('') === `cd 'D:/repo' && echo hi\n`, JSON.stringify(calls[3].writes))
+      calls[4].writes.join('') === `cd 'D:/repo' && echo hi\n`, JSON.stringify(calls[4].writes))
     check('the cmd side carries no cd prefix when bash dispatches',
-      calls[3].command === `"${BASH}" -s`, calls[3].command)
+      calls[4].command === `"${BASH}" -s`, calls[4].command)
     const bash = await engine.remoteBash('pinnedwin')
     check('the verified answer is cached with its source', bash?.path === BASH && bash?.source === 'detected', JSON.stringify(bash))
   } finally { cleanup() }
@@ -281,7 +284,8 @@ console.log('\n[engine: a pinned win WITHOUT bash keeps the historical cmd spell
 
 {
   const { engine, calls, cleanup } = await engineHarness('nodbashwin', { os: 'win' }, [
-    { stdout: '', code: 0 }, // the sweep answers nothing
+    { stdout: '', code: 0 }, // the niubash placement sweep answers nothing
+    { stdout: '', code: 0 }, // the well-known sweep answers nothing
     { stdout: 'hi\n', code: 0 },
     { stdout: 'hi\n', code: 0 },
   ])
@@ -289,14 +293,14 @@ console.log('\n[engine: a pinned win WITHOUT bash keeps the historical cmd spell
     check('no bash on a pinned win answers cmd', await engine.remoteDialect('nodbashwin') === 'cmd')
     await engine.exec('nodbashwin', 'echo hi')
     check('the exec is the bare command line (verbatim historical shape)',
-      calls[1].command === 'echo hi', JSON.stringify(calls.map(call => call.command)))
-    check('the cmd fallback writes no stdin', calls[1].writes.length === 0 && !calls[1].ended)
+      calls[2].command === 'echo hi', JSON.stringify(calls.map(call => call.command)))
+    check('the cmd fallback writes no stdin', calls[2].writes.length === 0 && !calls[2].ended)
     await engine.exec('nodbashwin', 'echo hi', { cwd: '/D:/repo' })
     check('a cwd crosses drives with the verbatim `cd /d` spelling',
-      calls[2].command === 'cd /d "D:\\repo" && echo hi', calls[2].command)
-    check('still no stdin on the cwd exec', calls[2].writes.length === 0)
-    check('the negative answer is cached (the sweep ran once)',
-      await engine.remoteDialect('nodbashwin') === 'cmd' && calls.length === 3, String(calls.length))
+      calls[3].command === 'cd /d "D:\\repo" && echo hi', calls[3].command)
+    check('still no stdin on the cwd exec', calls[3].writes.length === 0)
+    check('the negative answer is cached (the two sweeps ran once)',
+      await engine.remoteDialect('nodbashwin') === 'cmd' && calls.length === 4, String(calls.length))
   } finally { cleanup() }
 }
 

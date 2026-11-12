@@ -185,15 +185,17 @@ check('the helper is declared in the factory scope beside the components, not at
 console.log('\n[wiring]')
 
 const backdrops = [...source.matchAll(/className: 'sshwsp-backdrop'[^\n]*/g)].map(match => match[0])
-check('all eight dialog backdrops were found', backdrops.length === 8, `${backdrops.length} found`)
+// 024b2d0: NiubashDialog joined the dialog family (the init flow's own
+// backdrop), taking the count from eight to nine.
+check('all nine dialog backdrops were found', backdrops.length === 9, `${backdrops.length} found`)
 check('no backdrop still dismisses on a raw onClick',
   backdrops.every(line => !/onClick/.test(line)),
   backdrops.filter(line => /onClick/.test(line)).join(' | '))
 check('every backdrop spreads backdropDismiss',
-  backdrops.length === 8 && backdrops.every(line => line.includes('...backdropDismiss(')),
+  backdrops.length === 9 && backdrops.every(line => line.includes('...backdropDismiss(')),
   backdrops.join(' | '))
-check('the helper is wired at exactly eight call sites',
-  (source.match(/\.\.\.backdropDismiss\(/gu) ?? []).length === 8,
+check('the helper is wired at exactly nine call sites',
+  (source.match(/\.\.\.backdropDismiss\(/gu) ?? []).length === 9,
   `${(source.match(/\.\.\.backdropDismiss\(/gu) ?? []).length} call(s)`)
 
 console.log('\n[wiring: each dialog keeps its own busy guard]')
@@ -254,10 +256,20 @@ function guardOf (componentName) {
     browser.includes('...backdropDismiss(dismissBackdrop)'))
 }
 
+{
+  // 024b2d0: the Niubash init dialog refuses to be dismissed mid-deployment —
+  // an accidental click must not abandon a 33 MB upload the user asked for.
+  const dialog = guardOf('NiubashDialog')
+  check('NiubashDialog refuses to be dismissed while an init is running',
+    /const dismissBackdrop = \(\) => \{ if \(!running\) onClose\(\) \}/.test(dialog))
+  check('NiubashDialog spreads that guarded callback',
+    dialog.includes('...backdropDismiss(dismissBackdrop)'))
+}
+
 console.log('\n[the dialog body still stops propagation-free dismissal]')
 
 check('the inner dialog panels keep their own click handling (unchanged)',
-  (source.match(/className: 'sshwsp-dialog[^']*', onClick: \((?:event|e)\) => (?:event|e)\.stopPropagation\(\)/gu) ?? []).length === 8,
+  (source.match(/className: 'sshwsp-dialog[^']*', onClick: \((?:event|e)\) => (?:event|e)\.stopPropagation\(\)/gu) ?? []).length === 9,
   `${(source.match(/className: 'sshwsp-dialog[^']*', onClick: \((?:event|e)\) => (?:event|e)\.stopPropagation\(\)/gu) ?? []).length} panel(s)`)
 
 console.log(`\n=== ${passes.length} passed, ${failures.length} failed ===`)

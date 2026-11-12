@@ -249,8 +249,11 @@ const { LOCAL_EXEC_SKILL_NAME, localExecSkillPayload, installLocalExecSkill } = 
   check('index.js keeps the verdict sink at apply scope',
     index.includes('const localExecSkill = { registered: false, payload: null }'))
   check('index.js hands the sink to makeRoutes', index.includes('localExecSkill,'))
+  // f39d997 moved the announcement text into guidance.js; index.js keeps the
+  // re-export (old import paths keep working) but no longer carries the body.
+  const guidance = readFileSync(path.join(pluginRoot, 'lib/guidance.js'), 'utf8')
   check('the system-prompt announcement points at the skill',
-    index.includes('SSH_WORKSPACE_GUIDANCE') && index.includes('local-exec 技能有完整判定与写法'))
+    index.includes('SSH_WORKSPACE_GUIDANCE') && guidance.includes('local-exec 技能有完整判定与写法'))
 
   check('routes.js declares the read-only skill route',
     routes.includes("skill: '/api/dsh-ssh-workspace/skill'"))

@@ -23,12 +23,15 @@
  *    line), and the capability probe (`where` on cmd hosts, `command -v` on
  *    POSIX ones).
  *
- * 4. **The win-bash resolution probes** (2107b81): the login-shell fact gates
- *    everything, so a POSIX-login host pays exactly ONE probe (`%COMSPEC%`)
- *    and never sees the cmd-syntax bash sweep, while a cmd-login host pays a
- *    second, bash-candidate probe (`if exist …` + `where bash`) before its
- *    command dialect settles. Every scripted step list below spells those
- *    probes out, so a silent change in the probe order breaks loudly here.
+ * 4. **The win-bash resolution probes** (2107b81, cd212c3): the login-shell
+ *    fact gates everything, so a POSIX-login host pays exactly ONE probe
+ *    (`%COMSPEC%`) and never sees the cmd-syntax bash sweeps, while a
+ *    cmd-login host pays TWO bash-candidate probes before its command
+ *    dialect settles — first the niubash three-level placement sweep
+ *    (`manifest.json` + `bash.exe` per default placement), then the
+ *    well-known locations + `where bash`. Every scripted step list below
+ *    spells those probes out, so a silent change in the probe order breaks
+ *    loudly here.
  *
  * Run: node tests/dialect-smoke.mjs
  */
@@ -178,19 +181,23 @@ console.log('\n=== dialect smoke ===\n')
 // --- dd75ab6: remoteDialect probes %COMSPEC% and caches the answer ----------
 {
   // A cmd answer is no longer final (2107b81): the win-bash resolution sweeps
-  // the well-known bash locations with one cmd-syntax probe before the
-  // command dialect settles. The empty answer below means "no bash", so the
-  // dialect stays the historical cmd.
+  // the bash locations with two cmd-syntax probes before the command dialect
+  // settles (cd212c3 added the niubash three-level placement sweep in front).
+  // The empty answers below mean "no bash anywhere", so the dialect stays the
+  // historical cmd.
   const { engine, calls } = dialectHarness('win', [
     { stdout: 'C:\\Windows\\system32\\cmd.exe\r\n', code: 0 },
+    { stdout: '', code: 0 },
     { stdout: '', code: 0 },
   ])
   try {
     const dialect = await engine.remoteDialect('win')
     check('an expanded COMSPEC path answers cmd', dialect === 'cmd', dialect)
     check('the probe asks the login shell to expand %COMSPEC%', calls[0]?.command === 'echo %COMSPEC%', calls[0]?.command)
-    check('a cmd answer pays exactly one more probe: the bash-candidate sweep',
-      calls.length === 2 && calls[1].command.includes('if exist') && calls[1].command.includes('where bash'),
+    check('a cmd answer pays two more probes: niubash placements, then the well-known sweep',
+      calls.length === 3
+      && calls[1].command.includes('.dsh\\runtimes\\plugins') && !calls[1].command.includes('where bash')
+      && calls[2].command.includes('if exist') && calls[2].command.includes('where bash'),
       JSON.stringify(calls.map(call => call.command)))
   } finally {
     engine.dispose()
@@ -229,14 +236,15 @@ console.log('\n=== dialect smoke ===\n')
   const { engine, calls } = dialectHarness('cached', [
     { stdout: 'C:\\Windows\\system32\\cmd.exe\r\n', code: 0 },
     { stdout: '', code: 0 },
+    { stdout: '', code: 0 },
   ])
   try {
     const first = await engine.remoteDialect('cached')
     const second = await engine.remoteDialect('cached')
     check('a second call on the same connection answers from the cache', first === 'cmd' && second === 'cmd',
       `${first}/${second}`)
-    check('the whole dialect costs exactly two probes: login, then the bash sweep',
-      calls.length === 2 && calls[0].command === 'echo %COMSPEC%' && calls[1].command.includes('where bash'),
+    check('the whole dialect costs exactly three probes: login, niubash placements, then the sweep',
+      calls.length === 3 && calls[0].command === 'echo %COMSPEC%' && calls[2].command.includes('where bash'),
       JSON.stringify(calls.map(call => call.command)))
   } finally {
     engine.dispose()
@@ -254,16 +262,17 @@ console.log('\n=== dialect smoke ===\n')
     const first = execScriptedClient([
       { stdout: 'C:\\Windows\\system32\\cmd.exe\r\n', code: 0 },
       { stdout: '', code: 0 },
+      { stdout: '', code: 0 },
     ])
     engine.pool.set('rehomed', pooledRecord('rehomed', first.client))
     check('the first connection answers cmd from its probes',
-      await engine.remoteDialect('rehomed') === 'cmd' && first.calls.length === 2)
+      await engine.remoteDialect('rehomed') === 'cmd' && first.calls.length === 3)
     engine.closeRecord('rehomed', engine.pool.get('rehomed'))
     const reconnected = execScriptedClient([{ stdout: '%COMSPEC%\r\n', code: 0 }])
     engine.pool.set('rehomed', pooledRecord('rehomed', reconnected.client))
     const dialect = await engine.remoteDialect('rehomed')
     check('a reconnect probes again instead of trusting the old record',
-      dialect === 'posix' && reconnected.calls.length === 1 && first.calls.length === 2,
+      dialect === 'posix' && reconnected.calls.length === 1 && first.calls.length === 3,
       `dialect=${dialect} firstProbes=${first.calls.length} newProbes=${reconnected.calls.length}`)
     check('a posix answer costs one probe and no bash sweep ever fires',
       reconnected.calls.length === 1 && reconnected.calls[0].command === 'echo %COMSPEC%',
@@ -276,23 +285,28 @@ console.log('\n=== dialect smoke ===\n')
 // --- dd75ab6: the capability probe speaks the host's dialect too ------------
 {
   // On a cmd host WITHOUT bash the probe order is: %COMSPEC% login probe,
-  // bash-candidate sweep (answers nothing here), then the `where` capability
-  // script — calls[2] is the capability script.
+  // the niubash placement sweep (answers nothing here), the well-known bash
+  // sweep (answers nothing either), then the `where` capability script —
+  // calls[3] is the capability script.
   const { engine, calls } = dialectHarness('wintools', [
     { stdout: 'C:\\Windows\\system32\\cmd.exe\r\n', code: 0 },
+    { stdout: '', code: 0 },
     { stdout: '', code: 0 },
     { stdout: 'rg\r\ngit\r\ndsh-probe-done\r\n', code: 0 },
   ])
   try {
     const result = await engine.probeCapabilities('wintools')
-    const script = calls[2]?.command ?? ''
+    const script = calls[3]?.command ?? ''
     check('a cmd host checks presence with where', script.includes('where rg') && script.includes('where git') && script.includes('where inotifywait'), script)
     check('the cmd probe does not use POSIX command -v', !script.includes('command -v'), script)
     check('the cmd probe joins its checks with &, not ;', script.includes(' & ') && !script.includes('; '), script)
     check('the probed capabilities read back truthfully',
       result.rg === true && result.git === true && result.inotifywait === false, JSON.stringify(result))
-    check('the probe order is login, bash sweep, then capabilities',
-      calls.length === 3 && calls[0].command === 'echo %COMSPEC%' && calls[1].command.includes('if exist'),
+    check('the probe order is login, niubash placements, bash sweep, capabilities',
+      calls.length === 4
+      && calls[0].command === 'echo %COMSPEC%'
+      && calls[1].command.includes('if exist') && !calls[1].command.includes('where bash')
+      && calls[2].command.includes('where bash'),
       JSON.stringify(calls.map(call => call.command.slice(0, 40))))
   } finally {
     engine.dispose()

@@ -28,8 +28,23 @@
  */
 
 import { createHash } from 'node:crypto'
+import path from 'node:path'
 
 const pluginRoot = new URL('..', import.meta.url).pathname
+
+// cd212c3 made win-bash.js import bash-payload.js (the pin) at module load,
+// and bash-payload.js resolves the DSH peer packages (via remote-fs.js); the
+// doc line above ("imports only diagnostics.js") stopped being true there.
+// The rest of this suite is unchanged in spirit — the stub tree keeps it
+// running on a bare checkout.
+const coreRoot = process.env.DSH_CORE_ROOT
+if (!coreRoot) {
+  console.log('\n=== win bash smoke ===\n')
+  console.log('  SKIP  DSH_CORE_ROOT is not set (win-bash.js now loads the bash payload chain)')
+  console.log('\n=== 0 passed, 0 failed, 1 suite skipped ===')
+  process.exit(0)
+}
+process.env.DSH_PEER_ROOT = [coreRoot, process.env.DSH_PEER_ROOT].filter(Boolean).join(path.delimiter)
 
 let passed = 0
 let failures = 0
@@ -260,17 +275,21 @@ const BASH_VERSION = { stdout: 'GNU bash, version 5.2.26(1)-release\r\n' }
 
 {
   // The verify limit: a sweep naming many candidates executes at most
-  // WIN_BASH_VERIFY_LIMIT of them, in list order.
+  // WIN_BASH_VERIFY_LIMIT of them, in list order. The niubash placement sweep
+  // (cd212c3) runs first and answers nothing here.
   const sweep = Array.from({ length: WIN_BASH_VERIFY_LIMIT + 2 }, (_, index) => `@@C:\\cand\\${index}\\bash.exe`).join('\r\n')
   const { engine, calls } = engineDouble([
+    { stdout: '', code: 0 }, // the niubash placement sweep
     { stdout: sweep, code: 0 },
     ...Array.from({ length: WIN_BASH_VERIFY_LIMIT }, () => ({ stdout: '', success: false, exitCode: 1 })),
   ])
   const bash = await resolveWinBash(engine, 'w', { entry: {} })
   check('a sweep with no working candidate resolves to none (cmd fallback)', bash === undefined, JSON.stringify(bash))
   check('detection executes at most WIN_BASH_VERIFY_LIMIT candidates, in list order',
-    calls.length === 1 + WIN_BASH_VERIFY_LIMIT
-    && calls[1].command === `"C:\\cand\\0\\bash.exe" --version`
+    calls.length === 2 + WIN_BASH_VERIFY_LIMIT
+    && calls[0].command.includes('.dsh\\runtimes\\plugins') && !calls[0].command.includes('where bash')
+    && calls[1].command.includes('where bash')
+    && calls[2].command === `"C:\\cand\\0\\bash.exe" --version`
     && calls.at(-1).command === `"C:\\cand\\${WIN_BASH_VERIFY_LIMIT - 1}\\bash.exe" --version`,
     JSON.stringify(calls.map(call => call.command)))
   check('WIN_BASH_VERIFY_LIMIT is 4', WIN_BASH_VERIFY_LIMIT === 4, String(WIN_BASH_VERIFY_LIMIT))

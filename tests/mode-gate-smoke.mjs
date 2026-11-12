@@ -765,10 +765,13 @@ const { sessionModeOf, specModeOf, assertRemoteCommandAllowed, remoteReadOnlyMes
 // once the gate exists, and exactly the kind of stale sentence that turns a
 // policy denial into a bug report.
 {
-  const source = await import('node:fs').then(fs => fs.promises.readFile(path.join(pluginRoot, 'lib/index.js'), 'utf8'))
+  // f39d997 moved the announcement text verbatim from index.js into
+  // guidance.js (the one copy the injection, the /injected route and the
+  // panel display all read); the gate wording must move WITH it.
+  const source = await import('node:fs').then(fs => fs.promises.readFile(path.join(pluginRoot, 'lib/guidance.js'), 'utf8'))
   check('the announcement says read-only blocks remote commands',
     /仅可查看.*远端写入与命令执行都被拒绝|远端写入与命令执行都被拒绝/u.test(source),
-    'lib/index.js announcement no longer states the command gate')
+    'lib/guidance.js announcement no longer states the command gate')
   check('the announcement no longer claims the policy is ignored',
     !/本机沙箱策略（sandbox_permissions）不适用于远端命令。'/.test(source) ||
       /因此\*\*会话处于/u.test(source),
