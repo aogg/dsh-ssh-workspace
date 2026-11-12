@@ -14,7 +14,7 @@
 
 | 项 | 数值 |
 | --- | --- |
-| Agent 工具 | 10 个 `ssh_workspace_*` |
+| Agent 工具 | 11 个 `ssh_workspace_*` |
 | 浏览器 HTTP 路由 | 35 条（前缀 `/api/dsh-ssh-workspace/`，默认仅回环 + Host 头校验；webserver 绑 `0.0.0.0` 时 `allowLan` 缺省自动放宽到私网，见 [allowLan](../README.md#局域网部署allowlan)） |
 | 接管的服务 seam | 4 个：`ctx.fs`、`ctx.shell`、`ctx.subprocess`、`ctx.subprocess.spawnTerminal` |
 | 桥接的宿主内建模块 | 2 个：`node:fs/promises`、`node:path` |
@@ -193,7 +193,9 @@
 
 | 功能 | 说明 |
 | --- | --- |
-| `pwsh` / `bash` 远端化 | 会话工作区是 `ssh://` 时，这两个工具的命令**在远端以 POSIX shell 语义执行**；一次性命令、后台任务、超时与中止都按 DSH 的进程契约工作；本地 `workdir` 的命令仍在本机沙箱内 |
+| `pwsh` / `bash` 远端化 | 会话工作区是 `ssh://` 时，这两个工具的命令**在远端执行**；一次性命令、后台任务、超时与中止都按 DSH 的进程契约工作；本地 `workdir` 的命令仍在本机沙箱内。方言按主机判定（见下行） |
+| Windows 主机 bash 化 | Windows 类型主机（钉 `win` 或探测出 cmd 登录 shell）**优先用远端已有的 POSIX bash**：`bashPath`（手填）→ 已部署载荷（`bashProvisioned`）→ 自动探测（Git / scoop / chocolatey / MSYS2 固定候选 + `where bash`，排除 WSL 启动器），候选逐个 `--version` 实测、按连接缓存；有 bash 即按 POSIX 派发（exec 命令经 `bash -s` 从 stdin 喂入，绕开 cmd→bash 双层引号；持久 shell 与终端直接以该 bash 启动），**都没有才回退 cmd.exe**（原 cmd 拼法一字未改）。详见 [tools.md](./tools.md) |
+| `ssh_workspace_bash` | 显式探测（`action=detect`：当前 bash 与方言）与部署（`action=provision`：DSH 宿主侧下载 → sha256 校验 → 本机解包 → SFTP 整树上传到 `~/.dsh-ssh-workspace/bash/<版本>` → 远端 `--version` 实测 → 远端回执 `.provisioned.json` → 版本/路径记入主机条目；远端侧全程只有 SFTP 写入与 bash 自身，不碰 Windows 自带程序；载荷自带的 rg / git 随 PATH 前缀生效） |
 | 无沙箱约束 | 远端命令以远端登录用户的**完整权限**运行，不受本机文件沙箱限制——正因如此，`read-only` 会话的命令执行由插件**直接拒绝**（见上节「命令执行是另一条独立的写路径」），而不是尝试围栏 |
 | `ssh_workspace_exec` | 不依赖挂载即可在远端跑命令（主机巡检、挂载根之外的路径、装机脚本），支持 `run_in_background` 与 `timeoutMs` |
 | `ssh_workspace_shell` | **持久**远端 shell：`cd`、导出的变量、后台任务跨调用保留，像一直开着的一个终端；可按名字并存多个会话；PTY 通道，退出码由命令行末尾的标记行取回 |
@@ -332,7 +334,7 @@
 ## 相关
 
 - [architecture.md](./architecture.md) — 这些功能是怎么实现的
-- [tools.md](./tools.md) — 十个工具的参数与返回
+- [tools.md](./tools.md) — 十一个工具的参数与返回
 - [ui.md](./ui.md) — 界面上的出入口与交互
 - [hosts.md](./hosts.md) — 主机配置与认证
 - [troubleshooting.md](./troubleshooting.md) — 出问题时怎么查

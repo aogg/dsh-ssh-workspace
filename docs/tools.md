@@ -1,6 +1,6 @@
 # Agent 工具参考
 
-> 定位：十个 `ssh_workspace_*` 工具的用途、参数与返回。
+> 定位：十一个 `ssh_workspace_*` 工具的用途、参数与返回。
 
 这些工具都不复制文件能力：文件内容由 `ctx.fs`（SFTP）服务，`read` / `write` /
 `edit` 已经能在远端工作区工作；会话工作区为 `ssh://` 时，pwsh / bash 工具的
@@ -19,8 +19,52 @@
 返回 `hosts[]`，每项含 `alias`、`host`、`port`、`user`、`auth`
 （`key` / `password` / `agent`）、`keyReady`、`source`（`store` / `ssh-config`）、
 `description`（无则为空，不会出现 `undefined` 字段）、`tags`、`agentForward`、
-`compress`、`os`（主机钉死的命令方言，`win` / `mac` / `linux`；未钉的主机没有
-该字段，引擎按连接探测登录 shell——见 [hosts.md](./hosts.md)）。
+`compress`、`os`（主机钉死的操作系统，`win` / `mac` / `linux`；未钉的主机没有
+该字段，引擎按连接探测登录 shell——见 [hosts.md](./hosts.md)）、
+`bashPath`（主机钉死的 bash 可执行文件路径，win 主机的方言分派用它；未钉则无
+该字段）。
+
+## ssh_workspace_bash
+
+**探测或部署** Windows 类型主机的 POSIX bash 运行时。探测是连接时自动发生的
+（结果按连接缓存）；这个工具把两件事变成**显式入口**：让模型能问「这台主机现在
+按什么方言分派」，以及在探测不到 bash 时**部署**钉版载荷。
+
+| 参数 | 必填 | 说明 |
+| --- | --- | --- |
+| `alias` | 是 | 主机别名 |
+| `action` | 是 | `detect`（探测并报告）或 `provision`（部署钉版载荷） |
+| `payloadPath` | 否 | 仅 `provision`：本机（DSH 宿主侧）已备好的钉版归档绝对路径（字节必须与 pin 的 sha256 一致，离线 / 镜像场景用）；缺省从钉死的 URL 下载 |
+| `force` | 否 | 仅 `provision`：已有的部署即使回执匹配也重建 |
+
+**探测（`detect`）**：解析顺序为 ①主机条目 `bashPath`（面板手填，最高优先）→
+②已部署的载荷（`bashProvisioned`）→ ③自动探测（固定候选路径：Git for Windows
+两种布局、用户级 Git、scoop shim、chocolatey、MSYS2 两处，外加 `where bash` 扫
+PATH，**排除 WSL 的 `System32\bash.exe` 与 Store 别名**）。每个候选都要**实际
+执行** `bash --version` 验证（exit 0 且输出含 bash），文件存在不算数。返回
+`bash: { path, source: pinned|provisioned|detected, version }` 与
+`dialect`（`posix` / `cmd`）；一个都没有时 `dialect` 为 `cmd` 并提示可
+`provision`。
+
+**部署（`provision`）**：DSH 宿主侧下载钉版归档（或用 `payloadPath` 提供本机
+副本）→ node:crypto 校验 sha256 与字节数 → **本机**解包（node 内建 zlib + tar
+解析，支持普通文件 / 目录 / 硬链接三类成员；绝对路径、`..`、盘符、ADS 等危险
+成员名直接拒绝）→ 经插件现有 SFTP 通道把解包后的目录树整棵上传到远端
+`<HOME>\.dsh-ssh-workspace\bash\<版本>\`（先传 `.stage-…` 兄弟目录再 rename
+发布，中断不会留半个版本）→ 远端执行 `<bash> --version` 做完整性确认 → 回执
+`.provisioned.json` 写在树内（记录 pin 的 url / sha256 / 时间 / 主机别名）→
+版本与路径记入主机条目（`bashProvisioned`）。**红线：远端侧全程只接触 SFTP
+写入与 bash 自身**，不用远端 tar.exe / PowerShell Expand-Archive /
+bitsadmin / curl。部署成功后该主机立刻按 POSIX 分派，且载荷自带的 rg / git
+随之进入 PATH（远端搜索与变更追踪也随可用）。
+
+返回 `ok`、`action`、`alias`、`dialect`、`bash?`、
+`provisioned?`（`reused` / `path` / `root` / `version` / `files` / `bytes` /
+`verify`）、`error`。已有匹配版本的部署时重复 `provision` 直接复用（仍会
+`--version` 实测）；回执不匹配又没给 `force` 时明确报错。
+
+两个动作都执行远端命令（探测跑 `--version`、部署写树并执行 bash），因此与
+`ssh_workspace_exec` 共用同一套远端命令模式门禁（`read-only` 拒绝）。
 
 ## ssh_workspace_mount
 
@@ -121,13 +165,16 @@ ENOENT」的工作区。工作区记录若已被 `deregister` 模式删掉，会
 每次调用是一个**全新进程**：`cd`、导出的变量、后台任务都不会保留。需要保留
 状态时用 `ssh_workspace_shell`。
 
-命令在**主机的登录 shell** 里执行，方言先看主机条目的 `os` 字段（面板编辑器
-可选 win / mac / linux，见 [hosts.md](./hosts.md)），没有记录时按连接探测
-（连接级缓存）：`os: "win"` 直接按 cmd.exe 派发；`mac` / `linux` 按 POSIX；
-未记录 `os` 的条目（老条目 / `~/.ssh/config` 回退）走探测——Linux/macOS 主机
-是 POSIX `sh`；Windows OpenSSH 主机默认登录 shell 是 `cmd.exe`，命令按 cmd
-语法写（`where`、`if not exist … mkdir`、`set "K=V"`；带 `cwd` 时插件用
-`cd /d "D:\path" &&` 切目录）。登录 shell 被改成 PowerShell 的主机**当前
+命令按**主机的命令方言**执行。方言判定顺序：主机条目 `os` 字段（面板编辑器
+可选 win / mac / linux，见 [hosts.md](./hosts.md)）先定操作系统；`mac` /
+`linux` 直接按 POSIX；`win`（或探测出 cmd 登录 shell 的主机）**先看有没有
+POSIX bash**——解析顺序为 `bashPath`（手填）→ 已部署载荷（`bashProvisioned`）
+→ 自动探测（固定候选路径 + `where bash`，排除 WSL 启动器），每个候选都要
+`--version` 实测——有 bash 就按 POSIX 派发（命令经 `bash -s` 从 stdin 喂入，
+POSIX 语法：`ls`、`grep`、`|` 管道都可用），一个都没有才回退 cmd.exe（命令按
+cmd 语法写：`where`、`if not exist … mkdir`、`set "K=V"`；带 `cwd` 时插件用
+`cd /d "D:\path" &&` 切目录）。可以用 `ssh_workspace_bash action=detect` 随时
+确认当前生效的方言与 bash 路径。登录 shell 被改成 PowerShell 的主机**当前
 不适配**：钉了 `win` 也好、探测也罢，cmd 语法到 PowerShell 登录 shell 里都会
 失败——把该主机默认 shell 改回 cmd.exe 即可恢复。
 
@@ -152,14 +199,17 @@ ENOENT」的工作区。工作区记录若已被 `deregister` 模式删掉，会
 在**持久**的远端 shell 里执行命令：同一 (主机, 会话名) 上维持一个登录 shell，
 `cd`、导出的变量与后台任务跨调用保留，等同于一直使用同一个终端。
 
-shell 方言**跟随主机**：主机条目钉了 `os` 就按它定（win → cmd.exe，mac /
-linux → POSIX），没钉则连接时探测并缓存——Linux/macOS 主机是 POSIX `sh`
-（`sh -l` 登录 shell），Windows OpenSSH 主机是 `cmd.exe`（没有 login shell
-概念，直接启动；给 `cwd` 时用 `cmd /k cd /d "D:\path"` 先切盘符目录再保持
-交互）。即使本机是 Windows 也请按**远端**方言写命令：POSIX 主机写 POSIX 语法，
-Windows 主机写 cmd 语法。部署自带的 persistent bash / pwsh 工具按本机方言
-构造命令行（Windows 上是 PowerShell），无法驱动远端主机，因此本插件单独提供
-这个工具而不是接管它们。
+shell 方言**跟随主机**：主机条目钉了 `os` 就按它定（mac / linux → POSIX），
+没钉则连接时探测并缓存——Linux/macOS 主机是 POSIX `sh`（`sh -l` 登录 shell）；
+Windows 类型主机**有 POSIX bash 时直接以该 bash 启动会话**
+（`bash --noprofile --norc`，win 没有登录 shell 概念、进程直接启动；`cd` 用
+POSIX 拼写，盘符路径写作 `D:/code`；探测顺序与 exec 一致，可用
+`ssh_workspace_bash action=detect` 确认），**没有 bash 时是 `cmd.exe`**（没有
+login shell 概念，直接启动；给 `cwd` 时用 `cmd /k cd /d "D:\path"` 先切盘符目录
+再保持交互，命令按 cmd 语法写）。即使本机是 Windows 也请按**远端**方言写命令：
+POSIX 主机与有 bash 的 win 主机写 POSIX 语法，没有 bash 的 win 主机写 cmd 语法。
+部署自带的 persistent bash / pwsh 工具按本机方言构造命令行（Windows 上是
+PowerShell），无法驱动远端主机，因此本插件单独提供这个工具而不是接管它们。
 
 退出码的取回方式方言各自处理：POSIX 用 `$?`，cmd 用 `%ERRORLEVEL%`
 （标记行单独成行——cmd 按行解析并展开 `%VAR%`，标记行展开时上一行命令已跑完）。
@@ -181,18 +231,20 @@ Windows 主机写 cmd 语法。部署自带的 persistent bash / pwsh 工具按�
 ### Windows 主机上哪些能力可用
 
 Windows OpenSSH 默认登录 shell 是 cmd.exe，本插件按主机条目的 `os`（钉了就
-按它）或连接探测分派方言（探测有连接级缓存；失败一律按 POSIX 兜底，不会炸
-通道）：
+按它）或连接探测分派方言：**有 POSIX bash 就按 POSIX 派发**（探测顺序
+`bashPath` → 已部署载荷 → 自动探测，候选逐个 `--version` 实测；结果有连接级
+缓存），**一个都没有才按 cmd 派发**（探测失败一律按 POSIX 兜底，不会炸通道）。
+部署了钉版载荷的主机，载荷自带的 rg / git 会随 PATH 前缀生效：
 
-| 能力 | Windows 主机（cmd） | 说明 |
-| --- | --- | --- |
-| read / write / edit / stat / 列目录 / 传输 | 可用 | 纯 SFTP，与 shell 方言无关 |
-| 挂载 / 卸载 / 状态 / 端口转发 | 可用 | 同上 |
-| ssh_workspace_exec / shell / 终端 | 可用 | 命令按 cmd 语法写；`cd /d` 切盘符 |
-| glob / grep（远端 rg） | 可用（需远端装 rg） | 子进程桥按 cmd 拼脚本（`where` 探测、`set` 导出） |
-| 工作区变更追踪（远端 git） | 可用（需远端装 git） |  scratch 暂存镜像固定用 POSIX `/tmp`，Windows 主机上该镜像目录不可用——git 本体可用，宿主 scratch 的镜像 staging 不生效 |
-| 变更监视（inotifywait） | 不可用 | Windows 无 inotifywait，自动回退轮询 |
-| 登录 shell 改成 PowerShell 的主机 | **不适配** | 钉 `win` 或探测都会按 cmd 派发，但 cmd 语法进 PowerShell 登录 shell 仍会失败 |
+| 能力 | Windows 主机（有 bash） | Windows 主机（无 bash，cmd） | 说明 |
+| --- | --- | --- | --- |
+| read / write / edit / stat / 列目录 / 传输 | 可用 | 可用 | 纯 SFTP，与 shell 方言无关 |
+| 挂载 / 卸载 / 状态 / 端口转发 | 可用 | 可用 | 同上 |
+| ssh_workspace_exec / shell / 终端 | 可用（POSIX 语法） | 可用（cmd 语法） | 有 bash 时命令经 `bash -s`（stdin 喂脚本）执行；无 bash 时 `cd /d` 切盘符 |
+| glob / grep（远端 rg） | 可用（部署载荷后随载荷可用；否则需远端自装 rg） | 可用（需远端装 rg） | 子进程桥按对应方言拼脚本 |
+| 工作区变更追踪（远端 git） | 可用（部署载荷后随载荷可用；否则需远端自装 git） | 可用（需远端装 git） | scratch 暂存镜像固定用 POSIX `/tmp`，Windows 主机上该镜像目录不可用——git 本体可用，宿主 scratch 的镜像 staging 不生效 |
+| 变更监视（inotifywait） | 不可用 | 不可用 | Windows 无 inotifywait，自动回退轮询 |
+| 登录 shell 改成 PowerShell 的主机 | **不适配** | **不适配** | 钉 `win` 或探测都会按 cmd 派发，但 cmd 语法进 PowerShell 登录 shell 仍会失败 |
 
 限制的根因写一句就够：PowerShell 既不认 `export` / `command -v` 也不认
 `set "K=V"` / `where` 的 cmd 语义，暂不为它出第三套拼法；需要时把主机默认

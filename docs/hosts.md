@@ -31,18 +31,22 @@
 | `host` / `port` / `user` | 连接目标；默认端口 22 |
 | `auth` | `{ kind: "key" \| "password" \| "agent", keyPath?, passphrase?, password?, agentPath? }` |
 | `description` / `tags` | 备注与标签（`ssh_workspace_hosts` 可搜索） |
-| `os` | 可选枚举 `win` \| `mac` \| `linux`，**钉死主机的操作系统**，也就是远端命令的 shell 方言：`win` → cmd.exe，`mac` / `linux` → POSIX shell（exec / shell / 终端 / 子进程桥全部跟随，见 [tools.md](./tools.md)）。缺省 = 不钉，引擎按连接探测登录 shell（老条目与 `~/.ssh/config` 回退主机的既有行为），所以面板编辑器里旧主机在保存前显示「自动」而不是默认 Linux——把一台探测出 Windows 的主机钉成 Linux 会让它的远端命令全部失灵。保存时接受常见别名（`windows` → `win`，`macos` / `osx` / `darwin` → `mac`），认不出的值视为未设置（不落盘）；选「自动」保存即删除该字段、回到探测 |
+| `os` | 可选枚举 `win` \| `mac` \| `linux`，**钉死主机的操作系统**，也就定了远端命令的 shell 方言：`mac` / `linux` → POSIX shell；`win` → 优先用主机自己的 POSIX bash（钉了 `bashPath`、部署过载荷或探测得到，见下），一个都没有才回退 cmd.exe（exec / shell / 终端 / 子进程桥全部跟随，见 [tools.md](./tools.md)）。缺省 = 不钉，引擎按连接探测登录 shell（老条目与 `~/.ssh/config` 回退主机的既有行为），所以面板编辑器里旧主机在保存前显示「自动」而不是默认 Linux——把一台探测出 Windows 的主机钉成 Linux 会让它的远端命令全部失灵。保存时接受常见别名（`windows` → `win`，`macos` / `osx` / `darwin` → `mac`），认不出的值视为未设置（不落盘）；选「自动」保存即删除该字段、回到探测 |
+| `bashPath` | 可选字符串，**win 主机专用**。手动钉死该主机的 POSIX bash 可执行文件（如 `C:\Program Files\Git\bin\bash.exe`），是引擎 bash 解析的第一优先级（第二、三级为已部署载荷与自动探测，见 `ssh_workspace_bash`）；解析时仍会 `--version` 实测，失效的钉值会降级到下一级并记入诊断。保存时去除首尾空白与结尾分隔符，含引号或换行的值被拒绝（400）；留空保存即删除该字段、回到探测。mac / linux 主机忽略此字段 |
 | `agentForward` | 布尔。在远端**命令通道**（exec / shell / 终端 / 持久 shell）上转发本机 ssh-agent，使远端命令（如远端 `git push`）能用本机密钥认证，私钥不落到远端；SFTP（浏览 / 传输）不受影响，认证方式也不因此改变 |
 | `compress` | 布尔。传输压缩，以 CPU 换带宽，慢链路（跨国 / 移动网络）下明显更快 |
 | `aliasTag` | 可选布尔。开启后，侧栏中挂载自该主机的**远端工作区行**在名称下方显示一枚小标签，内容为主机别名（小号字体、超宽省略、悬停显示完整别名，行自然长高容纳第二行），用于多台主机的工作区挤在同一侧栏时分清归属；表现与实现要点见 [ui.md](./ui.md) 的「主机别名标签」。缺省 = 关闭（不落盘 `false`），编辑器以复选框呈现，勾掉即删除该字段；编辑器保存后立即生效 |
 | `defaultPath` | 可选字符串。面板「新建远程工作区」在该主机上浏览目录的**初始位置**（编辑器里的「新增工作区默认目录」），缺省 / 留空则打开 SSH 登录目录，字段不落盘。可在面板里浏览选定：新建工作区时勾选「设为本主机默认目录」，或在主机编辑器里用「选择…」按钮。保存时规范化：`\` 折算为 `/`、盘符路径补前导 `/`（`D:/code` → `/D:/code`）、折叠连续 `/`、除根 `/` 与裸盘符根（规范化为 `/D:/`）外去掉尾部 `/`；规范化后不是绝对路径的值会被拒绝（400）。示例：`/home/user` 或 `/D:/code/www` |
 | `proxyJump` | 非空时解析明确拒绝（见下） |
+| `bashProvisioned` | 可选对象，**由 `ssh_workspace_bash action=provision` 写入**，编辑器不碰：`{ path, root, version, sha256, provisionedAt }` 记录部署到该主机的钉版 bash 载荷（可执行文件路径、部署树根、版本、归档 sha256、时间）。它是 bash 解析的第二优先级，让部署在重启后仍然生效；形状损坏的记录按「未部署」降级（引擎回落到探测 / cmd），面板删除主机时随之消失 |
 | `createdAt` / `updatedAt` | 时间戳 |
 
-`agentForward` / `compress` / `aliasTag` / `os` 都是**可选字段**：缺省等于既有默认（开关
-关闭、操作系统按连接探测），所以老版本写入的条目与新版本字节级兼容。面板的
-主机编辑器里 `agentForward` / `compress` / `aliasTag` 以复选框呈现，勾掉即从文件中删除该
-字段，不会残留 `false`；`os` 以下拉呈现，选「自动」保存即删除该字段。
+`agentForward` / `compress` / `aliasTag` / `os` / `bashPath` 都是**可选字段**：
+缺省等于既有默认（开关关闭、操作系统按连接探测、bash 走探测），所以老版本写入的
+条目与新版本字节级兼容。面板的主机编辑器里 `agentForward` / `compress` /
+`aliasTag` 以复选框呈现，勾掉即从文件中删除该字段，不会残留 `false`；`os` 以下拉
+呈现，选「自动」保存即删除该字段；`bashPath` 在选了 Windows 时出现（输入框），留空
+保存即删除该字段。
 
 `agentForward` 是**逐通道**生效的：ssh2 的转发请求只能挂在 exec / shell 通道上，
 连接级同名字段会把整条连接（含只读 SFTP）都卷进来，本插件不使用它。转发的

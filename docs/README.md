@@ -2,7 +2,7 @@
 
 [根 README](../README.md) 面向「快速了解、安装、能力概览」；本目录存放展开的
 专题文档。内容已从 README 迁移并对照源码展开，**数字与清单均按当前源码核对**
-（路由 35 条、Agent 工具 10 个、冒烟套件 46 个）。如发现与实现不符之处，
+（路由 35 条、Agent 工具 11 个、冒烟套件 46 个）。如发现与实现不符之处，
 以源码为准并欢迎修订。
 
 ## 目录
@@ -14,7 +14,7 @@
 | [protocol.md](./protocol.md) | `ssh://` 路径协议：语法、规范化、显示规则、`file:` URI、写入围栏与停用围栏 | 完成 |
 | [hosts.md](./hosts.md) | 主机配置与认证：存储格式、`~/.ssh/config` 回退、面板管理 | 完成 |
 | [agent-prompts.md](./agent-prompts.md) | Agent 提示词三级配置：全局 → 主机 → 工作区的合并、禁用语义、脚本协议、注入机制与刷新时机 | 完成 |
-| [tools.md](./tools.md) | Agent 工具参考：十个 `ssh_workspace_*` 工具 | 完成 |
+| [tools.md](./tools.md) | Agent 工具参考：十一个 `ssh_workspace_*` 工具 | 完成 |
 | [ui.md](./ui.md) | 界面指南：面板、添加工作区双入口、远程工作区标记、端口转发与持久会话区 | 完成 |
 | [floating-workspaces.md](./floating-workspaces.md) | 浮动远端工作区：⋯ 菜单二级菜单、浮动卡片、添加 / 管理对话框、存储与路由、降级点 | 完成 |
 | [被扩展说明.md](./被扩展说明.md) | 对 DSH 官方工作区 ⋯ 菜单与工作区树的 DOM 扩展：共存契约、降级矩阵、卸载清理 | 完成 |

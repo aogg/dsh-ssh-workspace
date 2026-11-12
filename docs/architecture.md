@@ -169,8 +169,11 @@ realpath 读取失败按 `FS_NOT_FOUND` 语义处理。
 `patch-subprocess.js` 用显式双判，语义一致）。真正的非零退出码（如 `exit 1`）
 是有效结果，仍按 completed 结算并保留 `exitCode`。
 
-命令组装为 `export <env/dshEnv>; cd '<远端路径>' && <命令>`，由远端登录 shell
-按 POSIX 语义执行——远端不是 PowerShell，公告已向模型说明。**沙箱边界**：
+命令组装为 `export <env/dshEnv>; cd '<远端路径>' && <命令>`，按 POSIX 语义
+执行——POSIX 主机由登录 shell 执行；Windows 类型主机**有 POSIX bash 时**外层
+命令只是 `"bash" -s`，POSIX 脚本经 exec 通道 stdin 喂入（绕开 cmd→bash 双层
+引号，方言分派见 [tools.md](./tools.md)），**都没有才回退 cmd.exe** 的原 cmd
+拼法。远端不是 PowerShell，公告已向模型说明。**沙箱边界**：
 本机文件沙箱不跨 SSH，spec 上的 `sandboxPolicy` 对远端 workdir 不适用，远端
 命令以远端登录用户的完整权限运行。
 
@@ -356,10 +359,12 @@ shell。接管后，`spec.cwd` 是 `ssh://` 就改开 SSH PTY 通道，返回满
 两个刻意的取舍：
 
 - **`argv` 不复用**。`dsh-terminal-bash` 按**本机方言**构造命令行（Windows 上是
-  PowerShell），远端 POSIX 主机无法执行。接管层改启动远端自己的交互式 `sh`——
-  这正是上一版不做接管的理由，但缺口比方言问题更严重：不接管时持久工具在远端
-  工作区上根本不可用。启动远端 `sh` 让宿主的工具链可用，代价是远端始终是 POSIX
-  方言（工具描述里已写明）。
+  PowerShell），远端主机无法执行。接管层按**远端自己的方言**启动交互式 shell——
+  POSIX 主机启动远端 `sh`；Windows 类型主机有 POSIX bash 时直接以该 bash 启动
+  （`bash --noprofile --norc`，win 没有登录 shell 概念、进程直接启动），没有才
+  `cmd.exe`——这正是上一版不做接管的理由，但缺口比方言问题更严重：不接管时持久
+  工具在远端工作区上根本不可用。启动远端 shell 让宿主的工具链可用，代价是远端
+  方言由远端决定（工具描述里已写明）。
 - **`inspectForeground` 返回 `undefined`**。本机句柄从进程表读前台进程组；一条
   SSH 通道拿不到等价信息，而给一个错误答案更糟——上层会把"前台仍在运行"当真，
   等满整个超时。返回 `undefined` 选择其文档化的「输出静默」兜底判定，正确且只是

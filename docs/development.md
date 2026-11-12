@@ -9,12 +9,12 @@
 | 文件 | 职责 |
 | --- | --- |
 | `lib/index.js` | 插件入口：`name` / `inject` 声明、引擎装配、`ctx.inject(['fs'])` 接管时序、工具与路由注册、系统提示公告 |
-| `lib/engine.js` | SSH 引擎：按别名维护持久连接与 SFTP 通道、连接池、空闲回收、`exec` 远端命令；`withDraftSftp` 草稿探测（一次性连接、不进池、TOFU 只验证不落盘） |
+| `lib/engine.js` | SSH 引擎：按别名维护持久连接与 SFTP 通道、连接池、空闲回收、`exec` 远端命令（win 主机有 bash 时经 `"bash" -s` + stdin 喂 POSIX 脚本）；`remoteDialect` / `loginDialect` / `remoteBash` 方言与 bash 解析（按连接缓存）；`withDraftSftp` 草稿探测（一次性连接、不进池、TOFU 只验证不落盘） |
 | `lib/remote-fs.js` | SFTP 文件系统后端：实现 `ctx.fs` 的远端方法（stat / 读写 / 列目录 / 原子写 / 流式读 / 变更监视等），`FsError` 语义与本地后端对齐；变更监视优先 `inotifywait` 推送，无则轮询 |
 | `lib/protocol.js` | `ssh://` 路径：解析、规范化、`file:` URI、前缀判定、basename / dirname |
 | `lib/patch-fs.js` | `ctx.fs` 接管：把远端方法装到部署已有的后端实例上，其余方法原样转发 |
-| `lib/patch-shell.js` | `ctx.shell` 接管：`workdir` 为 `ssh://` 的 spec 改在远端执行（复用引擎连接），其余原样转发给本地执行器；实现 seam 的 handle 契约（`done` / `result` / `observed` / `kill` / `onExpiry` / `signal`） |
-| `lib/patch-subprocess.js` | `ctx.subprocess` 接管：`cwd` 为 `ssh://` 的 spawn 在远端执行（rg/git 白名单、POSIX 脚本组装、seam handle 契约、TERM→KILL 阶梯）；scratch 镜像注册表（env 改写 + 远端 `mkdir -p`），供 fs 桥的 `rm`/`copyFile` 联动 |
+| `lib/patch-shell.js` | `ctx.shell` 接管：`workdir` 为 `ssh://` 的 spec 改在远端执行（复用引擎连接），其余原样转发给本地执行器；实现 seam 的 handle 契约（`done` / `result` / `observed` / `kill` / `onExpiry` / `signal`）；win 主机有 bash 时 POSIX 脚本经 `"bash" -s` + stdin 喂入（stdin 载荷 SFTP 暂存重定向），无 bash 维持原状 |
+| `lib/patch-subprocess.js` | `ctx.subprocess` 接管：`cwd` 为 `ssh://` 的 spawn 在远端执行（rg/git 白名单、POSIX 脚本组装、win 主机 bash 化时 `"bash" -s` + stdin 喂脚本、stdin 载荷 SFTP 暂存重定向、seam handle 契约、TERM→KILL 阶梯）；scratch 镜像注册表（env 改写 + 远端 `mkdir -p`），供 fs 桥的 `rm`/`copyFile` 联动 |
 | `lib/patch-terminal.js` | 终端接管：会话工作区是 `ssh://` 时把 PTY 开在远端；受停用围栏约束 |
 | `lib/fs-shim.js` | 内建桥接：`node:fs/promises` 的 `mkdir`/`stat`/`lstat`/`realpath`/`readdir`/`copyFile`/`open`/`rm` 与 `node:path` 的 `isAbsolute`/`resolve`/`join`/`relative` 对 `ssh://` 拼写单独处理（含 `syncBuiltinESMExports`）；变更追踪的 SFTP 读句柄与 scratch 镜像落盘/联动，`readdir` 服务 `@` 补全 |
 | `lib/hosts.js` | 主机解析：存储优先、`~/.ssh/config` 回退、行渲染 |
@@ -26,7 +26,9 @@
 | `lib/routes.js` | 浏览器半边的 35 条 HTTP 路由（hosts / save / default-path / delete / forget-key / disconnect / test / probe / ls / status / mount / unmount / enable / agent-prompts ×5 / skill / floating ×5 / forward / unforward / forward-save / toggle / delete / remember / forward-probe / settings / transfer / download / upload）；引擎错误的 `routeErrorPayload` 把结构化主机密钥拒绝（`code` + `mismatch` 双指纹）随错误体透传 |
 | `lib/access-policy.js` | 浏览器路由的 LAN 开关：`allowLan` 三态（显式 true/false 优先，缺省跟随 `webserver.host === '0.0.0.0'`）。纯函数、无宿主依赖，所以「忘了写开关」这个最常见的部署状态能被测试直接执行，而不是只能靠一台真机撞上 403 |
 | `lib/shell.js` | 远端持久 shell 会话：`cd` / 导出变量 / 后台任务跨调用保留 |
-| `lib/tools.js` | 10 个 `ssh_workspace_*` Agent 工具（schema / 渲染 / 执行） |
+| `lib/tools.js` | 11 个 `ssh_workspace_*` Agent 工具（schema / 渲染 / 执行） |
+| `lib/win-bash.js` | Windows 主机 bash 解析：候选清单（Git / scoop / chocolatey / MSYS2，env 占位符远端展开）、`where bash` 探测脚本与解析、WSL 启动器排除、`--version` 实测、`bashCwdOf` 盘符拼写、provisioned 载荷的 PATH 前缀 |
+| `lib/bash-payload.js` | 钉版 bash 载荷（niubash v1.5.0 pin：url / sha256 / bytes / 解包方式）与部署器：下载或本机副本 → 摘要校验 → node zlib+tar 本机解包 → SFTP 整树上传（stage + rename 发布）→ 远端 `--version` 完整性确认 → 回执 `.provisioned.json` → 记入主机条目 |
 | `lib/local-exec-skill.js` | 自动注入技能 `local-exec`：经宿主 `skills.register` 注册进模型技能目录（`source: 'runtime'`、`userInvocable: false` 不进输入框技能菜单），正文讲清「workdir 决定命令落点」的路由规则、通道辨析、围栏与端口转发；skills 服务缺失只告警跳过，注册结论写入共享 sink 供 `/skill` 路由与面板展示 |
 | `lib/peers.js` | 依赖定位与加载：本包 `node_modules` → `DSH_PEER_ROOT` → 各 profile → 部署自带树 |
 | `lib/diagnostics.js` | 面向用户的诊断环形缓冲（固定 40 条）：连接 / 连接失败 / 断连 / 重连 / 降级 / 上游补丁结论。宿主无 console exporter 且 `debug` 被默认级别丢弃，所以这些信息只能从这里经由 status 工具与面板路由呈现 |

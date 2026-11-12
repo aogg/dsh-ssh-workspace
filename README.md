@@ -211,6 +211,7 @@ npm ci          # ssh2 是直接依赖，不随 clone 到位
 | `ssh_workspace_status` | 当前挂载 / 停用列表、连接、转发与持久会话状态 |
 | `ssh_workspace_exec` | **在远端**执行 shell 命令（可 `run_in_background`） |
 | `ssh_workspace_shell` | 在**持久**远端 shell 里执行命令，状态跨调用保留 |
+| `ssh_workspace_bash` | 探测 / 部署 Windows 主机的 POSIX bash（探测候选实测；部署走 SFTP 上传 + 远端自检，不碰远端 Windows 自带程序） |
 | `ssh_workspace_transfer` | 本机 ↔ 远端传文件（SFTP，不经对话内容） |
 | `ssh_workspace_forward` | 把远端端口映射到本机，返回可打开的 URL |
 | `ssh_workspace_unforward` | 关闭端口映射并释放本地端口 |
@@ -237,7 +238,8 @@ npm ci          # ssh2 是直接依赖，不随 clone 到位
 
 | 能力 | 说明 |
 | --- | --- |
-| shell 命令远端化 | 会话工作区是 `ssh://` 时，`pwsh` / `bash` 工具在远端以 POSIX shell 语义执行——一次性命令、后台任务、超时与中止都按 DSH 的进程契约工作；本地 `workdir` 的命令不受影响 |
+| shell 命令远端化 | 会话工作区是 `ssh://` 时，`pwsh` / `bash` 工具在远端执行——一次性命令、后台任务、超时与中止都按 DSH 的进程契约工作；本地 `workdir` 的命令不受影响。方言按主机判定：POSIX 主机走 POSIX shell；Windows 主机优先用远端自己的 POSIX bash（探测 → 可用 `ssh_workspace_bash` 部署 → 才回退 cmd.exe） |
+| Windows 主机 bash 化 | win 主机按固定候选路径（Git / scoop / chocolatey / MSYS2）加 `where bash` 探测 POSIX bash，候选逐个 `--version` 实测、按连接缓存；探测不到可显式部署钉版载荷（niubash，DSH 侧下载/校验/解包，仅 SFTP 上传 + 远端 `--version` 自检），部署后远端 rg / git 随载荷可用；都没有才回退 cmd.exe（原 cmd 拼法不变） |
 | glob / grep 远端搜索 | 调用**远端主机上的 ripgrep（`rg`）**返回真实远端结果；远端未安装 ripgrep 时得到带安装提示的明确失败（退出码 127） |
 | 变更追踪远端化 | 「变更」（deliverables）面板用**远端 git** 做回合快照与 diff——远端 shell 改的文件也会出现在变更列表（+N/−N、点开看 diff）；远端未装 git 时自动降级关闭，其余功能不受影响 |
 | `local-exec` 技能自动注入 | 插件向**模型技能目录**自动注册 `local-exec` 技能（`userInvocable: false`，不进输入框技能菜单）：讲清「命令落点由 bash / pwsh 的 workdir 决定」——会话工作区是 `ssh://` 时显式传本地 workdir（如 `/tmp`）即在本机执行、不过 SSH，并覆盖通道辨析（exec / shell / glob-grep 桥 / 终端）、沙箱围栏与端口转发方向；面板「自动注入技能」区可只读查看全文 |
@@ -254,7 +256,7 @@ npm ci          # ssh2 是直接依赖，不随 clone 到位
 | 「添加工作区」远程入口 | 「添加工作区」按钮替换为锚定菜单：「新建本地工作区」（DSH 原生选择器；宿主只提供应用内浏览后端时自动降级为应用内「选择本地目录」对话框——逐级浏览、就地新建文件夹、确认选择，且能力类型会被记住，后续打开不再先失败一次）或「新建远程工作区」（选主机 → 逐级浏览远端目录 → 确认挂载；目录不可写时警告并拒绝创建） |
 | 远程工作区专用标记 | 本插件创建的远程工作区在侧栏行、工作区选择器与会话页工作区按钮处显示远端标记图标，而不是普通文件夹图标；主机钉了 `os` 时标记随之分形（win 四窗格 / mac ⌘ / linux 终端提示符），未钉的保持通用标记 |
 | 浮动远端工作区 | 一个项目需要多条 SSH 远端时，在它的工作区行 ⋯ 菜单里配置「SSH 远程工作区」：条目挂在**该项目**名下，不占固定工作区行；选中后一个不透明卡片从左侧滑入盖住侧栏列表，卡内是该工作区的**原生行**（新建会话、重命名、删除、归档、收藏、拖拽与其它插件注入的菜单项全部照旧）。名称自动生成（`目录名 · 主机别名`），另有添加 / 管理对话框（改名、排序、测试连接、删除时可同时注销工作区、清理失效条目）。详见 [docs/floating-workspaces.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/floating-workspaces.md) |
-| 主机管理面板 | 添加 / 编辑 / 删除主机（私钥路径、认证方式、操作系统 win/mac/linux、备注等），改动立即生效并丢弃该别名旧连接；可选在工作区名称下方显示主机别名小标签（`aliasTag`，默认关）以便多主机工作区分辨归属；`~/.ssh/config` 主机只读展示；「测试连接」只探测可达性（连上即释放，不会留下连接），结果以顶部 toast 弹出，数秒自动消失（点击可提前关闭）；「已连接」状态内联在主机名后，断开时连带拆除该主机的端口转发 |
+| 主机管理面板 | 添加 / 编辑 / 删除主机（私钥路径、认证方式、操作系统 win/mac/linux、Windows 主机的 Bash 路径、备注等），改动立即生效并丢弃该别名旧连接；可选在工作区名称下方显示主机别名小标签（`aliasTag`，默认关）以便多主机工作区分辨归属；`~/.ssh/config` 主机只读展示；「测试连接」只探测可达性（连上即释放，不会留下连接），结果以顶部 toast 弹出，数秒自动消失（点击可提前关闭）；「已连接」状态内联在主机名后，断开时连带拆除该主机的端口转发 |
 | 浏览目录对话框 | 主机卡片的「浏览目录」逐级浏览远端目录、上传文件到当前目录、逐行下载文件，并可就地「挂载此目录」 |
 | 文件面板上传 / 下载 | 「工作区文件」面板头部有「上传文件到此目录」，文件树行右键菜单另有「下载到本机」/「上传文件到此目录」（仅远端行） |
 
@@ -274,7 +276,8 @@ exec 通道；空闲 30 分钟回收（有操作在飞的连接不回收）。
   带 `proxyJump` / `ProxyCommand` 的主机会在解析时被**明确拒绝**并说明原因，
   而不是悄悄按直连去试；需要跳板时请改用别的工具连接。
 - **shell 命令的落点由 `workdir` 决定**。会话工作区为 `ssh://` 时，
-  `pwsh` / `bash` 的命令在远端主机执行——按 POSIX shell 语义、不受本机文件
+  `pwsh` / `bash` 的命令在远端主机执行——按主机方言（POSIX 主机走 POSIX shell；
+  Windows 主机优先用远端自己的 bash、都没有才回退 cmd.exe）、不受本机文件
   沙箱约束（以远端登录用户的完整权限运行）；本地 `workdir` 的命令仍在本机
   沙箱内。未挂载的路径、主机巡检等场景仍用 `ssh_workspace_exec`。
 
@@ -310,7 +313,7 @@ exec 通道；空闲 30 分钟回收（有操作在飞的连接不回收）。
 | [protocol.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/protocol.md) | `ssh://` 路径协议：语法、规范化、显示规则、`file:` URI、写入围栏与停用围栏 |
 | [hosts.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/hosts.md) | 主机配置与认证：存储格式、`~/.ssh/config` 回退、面板管理 |
 | [agent-prompts.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/agent-prompts.md) | Agent 提示词三级配置：全局 → 主机 → 工作区的合并、禁用语义、脚本协议、注入机制与刷新时机 |
-| [tools.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/tools.md) | Agent 工具参考：十个 `ssh_workspace_*` 工具 |
+| [tools.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/tools.md) | Agent 工具参考：十一个 `ssh_workspace_*` 工具 |
 | [ui.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/ui.md) | 界面指南：面板、添加工作区双入口、远程工作区标记、浮动远端、端口转发与持久会话区 |
 | [floating-workspaces.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/floating-workspaces.md) | 浮动远端工作区：⋯ 菜单二级菜单、浮动卡片、添加 / 管理对话框、存储与路由、降级点 |
 | [被扩展说明.md](https://github.com/siqyka/dsh-ssh-workspace/blob/main/docs/被扩展说明.md) | 对 DSH 官方工作区 ⋯ 菜单与工作区树的 DOM 扩展：与 ao-local / better-sidebar 的共存契约、降级矩阵 |
