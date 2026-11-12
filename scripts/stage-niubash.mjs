@@ -24,6 +24,10 @@
  * - FAIL LOUD: when a real pack needs the archive and neither a local
  *   pointer nor the network can supply one, the script exits non-zero with
  *   the reason — a pack must never silently ship without a payload.
+ * - SINGLE ROOT: an archive whose members share no single top-level
+ *   directory (root-level files, or several distinct top-level roots) is
+ *   rejected outright — staging it would write a `prefix: ""` manifest the
+ *   runtime never trusts, dead weight the package ships forever.
  *
  * The tar walk here is DESCRIPTIVE (it discovers `prefix` and the bash
  * executable's relative path and digest so the manifest can freeze them).
@@ -312,6 +316,10 @@ function assertSafeMember (name) {
  * @returns {{prefix: string, executable: string | undefined, executableSha256: string | undefined}}
  *   the shape facts (executable digest present only when a bash member was found).
  * @throws {Error} on malformed, truncated or unsafe archives.
+ * @throws {Error} when the members share no single top-level root directory
+ *   (root-level files, or several distinct top-level roots) — such a layout
+ *   is not a niubash portable package and would stage a manifest the runtime
+ *   can never trust, so it fails loudly here instead.
  */
 function inspectArchive (file) {
   const tar = gunzipSync(readFileSync(file), { maxOutputLength: MAX_TAR_BYTES })
@@ -351,8 +359,9 @@ function inspectArchive (file) {
   }
   if (files.size === 0 && links.size === 0 && dirs.size === 0) throw new Error('bash payload archive carries no members')
   // The archive's single root = the longest directory path every member's
-  // directory shares. A root-level file (no directory) forces `''`, which the
-  // single-root requirement below then rejects — the runtime parser requires
+  // directory shares. A root-level file (no directory) forces `''`, and so
+  // does an archive spreading over several distinct top-level roots — the
+  // explicit check below rejects both, because the runtime parser requires
   // every member under one frozen prefix.
   let prefix = undefined
   for (const dir of dirs) {
@@ -360,9 +369,15 @@ function inspectArchive (file) {
     if (prefix === '') break
   }
   const root = prefix ?? ''
-  // A single-root archive is required: the runtime parser rejects members
-  // outside the frozen prefix, so describing a multi-root archive here would
-  // stage a payload provisioning can never accept.
+  // A single-root archive is REQUIRED, and `''` is not one: the staged
+  // manifest freezes `prefix`, and the runtime's `readPayloadManifest` only
+  // accepts a prefix ending in "/" — an empty root would stage a payload
+  // whose manifest the runtime never trusts, silently degrading to the
+  // bundled pin while the package still carries the dead-weight archive.
+  // Fail loudly at pack time instead of writing such a manifest.
+  if (root === '') {
+    throw new Error('bash payload archive has no single root directory — its members either sit at the archive root or spread over several distinct top-level directories, so the layout does not match a niubash win-x64 portable package (expected exactly one wrapping root directory, e.g. `niubash-v1.9.0/…`)')
+  }
   for (const name of [...files.keys(), ...links.keys()]) {
     if (!name.startsWith(root)) throw new Error(`bash payload archive member outside the common root ${JSON.stringify(root)}: ${JSON.stringify(name)}`)
   }
